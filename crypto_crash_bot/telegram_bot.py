@@ -1972,7 +1972,19 @@ def _handle_buy_callback(cb_data):
         send_message(msg, buttons=btns)
 
     elif action == "custom":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_amount")
+        ok = session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_amount")
+        if not ok:
+            logger.warning(f"SESSION_MISSING action=custom cannot set step, creating new session")
+            sym = symbol.upper()
+            token = trading_ui.resolve_token(slug) if slug else None
+            data = {"slug": slug, "symbol": sym}
+            if token:
+                data["current_price"] = token.get("current_price")
+                data["token_key"] = token.get("token_key", "")
+                data["chain_id"] = token.get("chain_id", "")
+                data["contract_address"] = token.get("contract_address", "")
+            session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_active", data, step="waiting_buy_amount")
+        logger.info(f"SESSION_SET key={config.TELEGRAM_CHAT_ID}:{config.TELEGRAM_CHAT_ID} flow=buy step=waiting_buy_amount")
         send_message("\U0001f4b5 How much do you want to buy in USDT?\n\nExample:\n100")
 
     elif action == "askprice":
@@ -1997,13 +2009,24 @@ def _handle_buy_callback(cb_data):
             if amount > 0 and "quantity" not in data:
                 qty = round(amount / price, 6)
                 session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
-            msg = trading_ui.build_buy_confirm_text(slug, symbol, data)
-            btns = trading_ui.buy_confirm_buttons(slug, symbol)
-            send_message(msg, buttons=btns)
+            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
+            send_message(
+                f"\U0001f4b5 Price set: {format_usd(price)}\n\n"
+                f"Enter fee in USD (or 0 for no fee):\n"
+                f"Example:\n2.50",
+                buttons={"inline_keyboard": [[{"text": "\U0001f4b5 No Fee", "callback_data": f"buy:no_fee:{slug}:{symbol}"}]]})
         else:
             send_message("Precio actual no disponible. Ingresa precio manual.",
                          buttons=trading_ui.buy_price_buttons(slug, symbol))
+
+    elif action == "no_fee":
+        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", 0)
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
+        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+        data = s["data"] if s else {}
+        msg = trading_ui.build_buy_confirm_text(slug, symbol, data)
+        btns = trading_ui.buy_confirm_buttons(slug, symbol)
+        send_message(msg, buttons=btns)
 
     elif action == "editprice":
         session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
@@ -2277,73 +2300,96 @@ def _handle_buy_waiting_text(text):
 
 
 def _handle_buy_active_text(text):
-    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-    if not active or active.get("flow") != "buy_active":
-        return False
-    step = active.get("step", "")
-    data = active.get("data", {})
-    slug = data.get("slug", "")
-    symbol = data.get("symbol", "")
+    try:
+        active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+        if not active or active.get("flow") != "buy_active":
+            return False
+        step = active.get("step", "")
+        data = active.get("data", {})
+        slug = data.get("slug", "")
+        symbol = data.get("symbol", "")
 
-    if step == "waiting_buy_amount":
-        try:
-            amount = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid number (e.g. 100).")
-            return True
-        if amount <= 0:
-            send_message("Amount must be positive.")
-            return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount)
-        price = data.get("current_price")
-        if price and price > 0:
-            qty = round(amount / price, 6)
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-            # Show price options
-            hint = f"Current detected price: {format_usd(price)}"
-            send_message(
-                f"Purchase price:\n\n{hint}\n\nUse current price or enter custom.",
-                buttons=trading_ui.buy_price_buttons(slug, symbol))
-        else:
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
-            send_message("Enter purchase price in USD:")
-        return True
-
-    elif step == "waiting_buy_price_input":
-        try:
-            price = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid price.")
-            return True
-        if price <= 0:
-            send_message("Price must be positive.")
-            return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-        if "quantity" not in data or not data["quantity"]:
-            amount = data.get("amount_usd", 0)
-            if amount > 0:
+        if step == "waiting_buy_amount":
+            from session import parse_positive_decimal as _parse_dec
+            amt = _parse_dec(text)
+            if amt is None:
+                send_message("\u274c Invalid amount.\n\nPlease enter a positive number.\nExample:\n100")
+                return True
+            amount = float(amt)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount)
+            logger.info(f"SESSION_UPDATE key={config.TELEGRAM_CHAT_ID}:{config.TELEGRAM_CHAT_ID} amount_usd={amount}")
+            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            price = fresh["data"].get("current_price") if fresh else data.get("current_price")
+            if price is not None and price > 0:
                 qty = round(amount / price, 6)
                 session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
-        msg = trading_ui.build_buy_confirm_text(slug, symbol, data)
-        btns = trading_ui.buy_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
-        return True
+                hint = f"Current detected price: {format_usd(price)}"
+                session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
+                send_message(
+                    f"\U0001f4b5 Amount: {amount} USDT\n\n"
+                    f"Purchase price:\n{hint}\n\n"
+                    f"Use current price or enter custom price.",
+                    buttons=trading_ui.buy_price_buttons(slug, symbol))
+            else:
+                session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
+                logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_amount to=waiting_buy_price_input reason=no_current_price")
+                send_message(
+                    f"\U0001f4b5 Amount received: {amount} USDT\n\n"
+                    f"\u26a0\ufe0f Current price is not available.\n\n"
+                    f"Enter purchase price manually:\n"
+                    f"Example:\n0.0042")
+            return True
 
-    elif step == "waiting_buy_fee":
-        try:
-            fee = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid fee (e.g. 2.50).")
+        elif step == "waiting_buy_price_input":
+            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            if not fresh:
+                send_message("\u26a0\ufe0f Session expired. Please start again with /buy.")
+                return True
+            fresh_data = fresh.get("data", {})
+            from session import parse_positive_decimal as _parse_dec
+            px = _parse_dec(text)
+            if px is None:
+                send_message("\u274c Enter a valid price.\nExample:\n0.0042")
+                return True
+            price = float(px)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+            if "quantity" not in fresh_data or not fresh_data["quantity"]:
+                amount = fresh_data.get("amount_usd", 0)
+                if amount > 0:
+                    qty = round(amount / price, 6)
+                    session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
+            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
+            logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_price_input to=waiting_buy_fee")
+            send_message(
+                f"\U0001f4b5 Price set: {format_usd(price)}\n\n"
+                f"Enter fee in USD (or 0 for no fee):\n"
+                f"Example:\n2.50",
+                buttons={"inline_keyboard": [[{"text": "\U0001f4b5 No Fee", "callback_data": f"buy:no_fee:{slug}:{symbol}"}]]})
             return True
-        if fee < 0:
-            send_message("Fee cannot be negative.")
+
+        elif step == "waiting_buy_fee":
+            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            if not fresh:
+                send_message("\u26a0\ufe0f Session expired. Please start again with /buy.")
+                return True
+            fresh_data = fresh.get("data", {})
+            from session import parse_non_negative_decimal as _parse_nonneg
+            fee_dec = _parse_nonneg(text)
+            if fee_dec is None:
+                send_message("\u274c Enter a valid fee (e.g. 2.50 or 0).")
+                return True
+            fee = float(fee_dec)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
+            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
+            logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_fee to=confirm_buy fee={fee}")
+            msg = trading_ui.build_buy_confirm_text(slug, symbol, fresh_data)
+            btns = trading_ui.buy_confirm_buttons(slug, symbol)
+            send_message(msg, buttons=btns)
             return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
-        msg = trading_ui.build_buy_confirm_text(slug, symbol, data)
-        btns = trading_ui.buy_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
+
+    except Exception as e:
+        logger.error(f"SESSION_ERROR flow=buy_active step={step} text={text[:80]} error={e}", exc_info=True)
+        send_message(f"\u26a0\ufe0f Unexpected error. Please start again with /buy or /cancel.")
         return True
 
     return False
@@ -2548,16 +2594,58 @@ def _test_single_contract(tc):
     return result
 
 
-# Patch _handle_session_text
+# ── SESSION INPUT ROUTER ──────────────────────────────────────────────────
 _original_handle_session_text = _handle_session_text
 
+def _session_handle_buy_input(text, session):
+    step = session.get("step", "")
+    if step == "waiting_buy_amount":
+        return _handle_buy_active_text(text)
+    if step in ("waiting_buy_price_input", "waiting_buy_fee"):
+        return _handle_buy_active_text(text)
+    logger.warning(f"SESSION_UNKNOWN_STEP flow=buy step={step} text={text[:50]}")
+    send_message("\u26a0\ufe0f No esperaba texto en este paso. Usa los botones o /cancel.")
+    send_message("\U0001f4a1 <b>Buy Token</b>\n\nSend token ID, symbol, name or contract address.",
+                 buttons=trading_ui.buy_flow_start_buttons())
+    return True
+
+
+def _session_handle_sell_input(text, session):
+    step = session.get("step", "")
+    if step in ("waiting_sell_qty", "waiting_sell_price_input", "waiting_sell_price_edit", "waiting_sell_fee"):
+        return _handle_sell_active_text(text)
+    logger.warning(f"SESSION_UNKNOWN_STEP flow=sell step={step} text={text[:50]}")
+    send_message("\u26a0\ufe0f No esperaba texto en este paso. Usa los botones o /cancel.")
+    send_message("\U0001f4a1 <b>Sell Token</b>\n\nSelect a position:",
+                 buttons=trading_ui.sell_flow_position_buttons())
+    return True
+
+
+def _handle_session_input(text):
+    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not active:
+        return False
+    flow = active.get("flow", "")
+    step = active.get("step", "")
+    logger.info(f"SESSION_INPUT key={config.TELEGRAM_CHAT_ID}:{config.TELEGRAM_CHAT_ID} flow={flow} step={step} text={text[:80]}")
+
+    if flow == "buy_waiting":
+        return _handle_buy_waiting_text(text)
+    if flow == "buy_active":
+        return _session_handle_buy_input(text, active)
+    if flow == "sell" or flow == "sell_active":
+        return _session_handle_sell_input(text, active)
+    return False
+
+
 def _patched_handle_session_text(text):
-    if _handle_buy_waiting_text(text):
-        return
-    if _handle_buy_active_text(text):
-        return
-    if _handle_sell_active_text(text):
-        return
-    _original_handle_session_text(text)
+    try:
+        if _handle_session_input(text):
+            return
+        _original_handle_session_text(text)
+    except Exception as e:
+        logger.error(f"SESSION_ERROR text={text[:80]} error={e}", exc_info=True)
+        send_message(f"\u26a0\ufe0f Unexpected error processing your input.\n\nPlease try again or use /cancel.")
+
 
 _handle_session_text = _patched_handle_session_text
