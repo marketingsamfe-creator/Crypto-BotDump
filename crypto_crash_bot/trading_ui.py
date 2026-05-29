@@ -54,44 +54,73 @@ def resolve_token(query):
                 }
 
     if inp_type in ("symbol_or_id", "name_search"):
-        coin_data = search_coins(q.lower())
-        if coin_data:
-            coin = coin_data[0]
-            result = {
-                "slug": coin["id"],
-                "symbol": coin["symbol"].upper(),
-                "name": coin["name"],
-                "source": "coingecko",
-            }
+        q_lower = q.lower().strip()
+
+        # Strategy 1: try fetching as CoinGecko ID directly
+        detail = None
+        try:
+            detail = fetch_coin_detail(q_lower)
+        except Exception:
+            pass
+
+        if detail and detail.get("id"):
+            coin_id = detail["id"]
+        else:
+            # Strategy 2: search coins list
+            coin_data = search_coins(q_lower)
+            coin = None
+            if coin_data:
+                for c in coin_data:
+                    if c.get("symbol", "").lower() == q_lower:
+                        coin = c
+                        break
+                    if c.get("id", "").lower() == q_lower:
+                        coin = c
+                        break
+                if not coin:
+                    coin = coin_data[0]
+            if not coin:
+                return None
+            coin_id = coin["id"]
             try:
-                detail = fetch_coin_detail(coin["id"])
-                md = detail.get("market_data", {})
-                result["current_price"] = (md.get("current_price") or {}).get("usd")
-                result["price_change_1h"] = (md.get("price_change_percentage_1h_in_currency") or {}).get("usd")
-                result["price_change_24h"] = md.get("price_change_percentage_24h")
-                result["price_change_7d"] = md.get("price_change_percentage_7d")
-                result["volume_24h"] = (md.get("total_volume") or {}).get("usd")
-                result["market_cap"] = (md.get("market_cap") or {}).get("usd")
-                result["fdv"] = (md.get("fully_diluted_valuation") or {}).get("usd")
-                result["name"] = detail.get("name", coin["name"])
+                detail = fetch_coin_detail(coin_id)
             except Exception:
-                pass
-            try:
-                pair = search_pairs(coin["symbol"])
-                best = get_best_pair(pair, coin["symbol"])
-                if best:
-                    dex = extract_market_data(best)
-                    result["liquidity"] = dex.get("liquidity")
-                    result["chain"] = dex.get("chain")
-                    result["dex_url"] = dex.get("dex_url")
-                    result["pair_address"] = dex.get("pair_address")
-                    result["current_price"] = result["current_price"] or dex.get("price")
-                    result["price_change_1h"] = result["price_change_1h"] or dex.get("price_change_1h")
-                    result["price_change_24h"] = result["price_change_24h"] or dex.get("price_change_24h")
-                    result["volume_24h"] = result["volume_24h"] or dex.get("volume_24h")
-            except Exception:
-                pass
-            return result
+                detail = None
+
+        if not detail:
+            return None
+
+        md = detail.get("market_data", {})
+        result = {
+            "slug": detail["id"],
+            "symbol": detail.get("symbol", q_lower).upper(),
+            "name": detail.get("name", q_lower),
+            "source": "coingecko",
+            "current_price": (md.get("current_price") or {}).get("usd"),
+            "price_change_1h": (md.get("price_change_percentage_1h_in_currency") or {}).get("usd"),
+            "price_change_24h": md.get("price_change_percentage_24h"),
+            "price_change_7d": md.get("price_change_percentage_7d"),
+            "volume_24h": (md.get("total_volume") or {}).get("usd"),
+            "market_cap": (md.get("market_cap") or {}).get("usd"),
+            "fdv": (md.get("fully_diluted_valuation") or {}).get("usd"),
+        }
+        try:
+            coin_symbol = (detail.get("symbol") or q_lower).upper()
+            pair = search_pairs(coin_symbol)
+            best = get_best_pair(pair, coin_symbol)
+            if best:
+                dex = extract_market_data(best)
+                result["liquidity"] = dex.get("liquidity")
+                result["chain"] = dex.get("chain")
+                result["dex_url"] = dex.get("dex_url")
+                result["pair_address"] = dex.get("pair_address")
+                result["current_price"] = result["current_price"] or dex.get("price")
+                result["price_change_1h"] = result["price_change_1h"] or dex.get("price_change_1h")
+                result["price_change_24h"] = result["price_change_24h"] or dex.get("price_change_24h")
+                result["volume_24h"] = result["volume_24h"] or dex.get("volume_24h")
+        except Exception:
+            pass
+        return result
 
     return None
 
