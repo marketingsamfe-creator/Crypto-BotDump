@@ -1548,12 +1548,12 @@ PORTFOLIO_LINE_RE = re.compile(
 )
 
 CG_PORTFOLIO_URL_RE = re.compile(
-    r"coingecko\.com/(?:en/)?portfolio(?:/public)?/([a-zA-Z0-9\-]+)",
+    r"coingecko\.com/(?:en/)?portfolios?/(?:public/)?([a-zA-Z0-9\-_=]+)",
     re.IGNORECASE
 )
 
 CMC_PORTFOLIO_URL_RE = re.compile(
-    r"portfolio\.coinmarketcap\.com/(?:portfolios/)?([a-zA-Z0-9\-]+)",
+    r"portfolio\.coinmarketcap\.com/(?:portfolios?/)?([a-zA-Z0-9\-_=]+)",
     re.IGNORECASE
 )
 
@@ -1639,10 +1639,9 @@ def _fetch_portfolio_from_url(url):
 
     entries = []
 
-    import re as _re
     # Try to find JSON data in script tags with portfolio data
     # CoinGecko often embeds __NEXT_DATA__ or similar
-    next_data = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, _re.DOTALL)
+    next_data = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
     if next_data:
         try:
             import json
@@ -1664,7 +1663,7 @@ def _fetch_portfolio_from_url(url):
             pass
 
     # Try to find JSON data in window.__INITIAL_STATE__ or similar
-    state_match = _re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, _re.DOTALL)
+    state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
     if state_match:
         try:
             import json
@@ -1684,14 +1683,14 @@ def _fetch_portfolio_from_url(url):
             pass
 
     # Try simple table parsing (HTML fallback)
-    rows = _re.findall(
+    rows = re.findall(
         r'<tr[^>]*>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*>(.*?)</td>.*?</tr>',
-        html, _re.DOTALL
+        html, re.DOTALL
     )
     for cols in rows:
-        price = _re.search(r'\$?([\d,]+\.?\d*)', cols[2])
-        qty = _re.search(r'([\d,]+\.?\d*)', cols[1])
-        sym = _re.search(r'([A-Z]{2,10})', cols[0], re.IGNORECASE)
+        price = re.search(r'\$?([\d,]+\.?\d*)', cols[2])
+        qty = re.search(r'([\d,]+\.?\d*)', cols[1])
+        sym = re.search(r'([A-Z]{2,10})', cols[0], re.IGNORECASE)
         if price and qty and sym:
             try:
                 entries.append({
