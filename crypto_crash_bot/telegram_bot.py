@@ -54,14 +54,8 @@ CMD_DEFS = {
         "examples": ["/addtoken TAO bittensor"]},
     "/removetoken": {"args": [("symbol", True)], "desc": "Archivar token del portafolio",
         "examples": ["/removetoken ARIA"]},
-    "/buy": {"args": [("symbol", False), ("quantity", False), ("price_usd", False), ("fee_usd", False)],
-        "desc": "Registrar compra\nSin argumentos inicia modo guiado",
-        "examples": ["/buy", "/buy TAO 1.5 390", "/buy TAO 1.5 390 2.50"]},
-    "/sell": {"args": [("symbol", False), ("quantity", False), ("price_usd", False), ("fee_usd", False)],
-        "desc": "Registrar venta parcial\nSin argumentos inicia modo guiado",
-        "examples": ["/sell", "/sell TAO 1 420", "/sell TAO 1 420 1.50"]},
-    "/sellall": {"args": [("symbol", True), ("price_usd", True), ("fee_usd", False)],
-        "desc": "Vender posicion completa", "examples": ["/sellall ARIA 0.052", "/sellall ARIA 0.052 3"]},
+    "/importportfolio": {"args": [], "desc": "Importar portafolio desde CoinGecko/CMC o texto",
+        "examples": ["/importportfolio", "/importportfolio https://www.coingecko.com/en/portfolio/public/..."]},
     "/position": {"args": [("symbol", True)], "desc": "Detalle de posicion",
         "examples": ["/position TAO"]},
     "/transactions": {"args": [("symbol", True)], "desc": "Historial de operaciones",
@@ -95,9 +89,7 @@ CMD_DEFS = {
 
 BOT_COMMANDS = [
     {"command": "portafolio", "description": "Resumen del portafolio"},
-    {"command": "buy", "description": "Comprar token"},
-    {"command": "sell", "description": "Vender token"},
-    {"command": "sellall", "description": "Vender todo un token"},
+    {"command": "importportfolio", "description": "Importar portafolio desde link o texto"},
     {"command": "position", "description": "Detalle de una posicion"},
     {"command": "transactions", "description": "Historial de operaciones"},
     {"command": "addtoken", "description": "Agregar token al portafolio"},
@@ -275,8 +267,7 @@ def _loading_texts():
     return {
         "/start": "\U0001f3e0 Loading menu...",
         "/menu": "\U0001f3e0 Loading menu...",
-        "/buy": "\u2795 Buy Token...",
-        "/sell": "\u2796 Loading positions...",
+        "/importportfolio": "\U0001f4e5 Importing portfolio...",
         "/dumps": "\U0001f4c9 Loading Top Losers...",
         "/hype": "\u26a0\ufe0f Loading Hype Signals...",
         "/trends": "\U0001f525 Loading Trends...",
@@ -333,10 +324,6 @@ def _main_menu_buttons():
         "inline_keyboard": [
             [
                 {"text": "\U0001f4ca Portfolio", "callback_data": "cmd:portafolio"},
-                {"text": "\u2795 Buy", "callback_data": "flow:buy:select_source"},
-            ],
-            [
-                {"text": "\u2796 Sell", "callback_data": "flow:sell:select"},
                 {"text": "\U0001f50e Search", "callback_data": "flow:search"},
             ],
             [
@@ -348,6 +335,7 @@ def _main_menu_buttons():
                 {"text": "\u2b50 Watchlist", "callback_data": "cmd:watchlist"},
             ],
             [
+                {"text": "\U0001f4e5 Import Portfolio", "callback_data": "cmd:import"},
                 {"text": "\u2699\ufe0f Settings", "callback_data": "cmd:portfolioedit"},
             ],
         ]
@@ -357,10 +345,6 @@ def _main_menu_buttons():
 def _token_action_buttons(slug, symbol, coin_id):
     return {
         "inline_keyboard": [
-            [
-                {"text": "\u2795 Buy/Add", "callback_data": f"flow:buy:token:{slug}:{symbol}"},
-                {"text": "\u2796 Sell", "callback_data": f"flow:sell:token:{slug}"},
-            ],
             [
                 {"text": "\u2b50 Watchlist", "callback_data": f"watchlist:add:{slug}"},
                 {"text": "\U0001f4ca Position", "callback_data": f"cmd:position:{symbol}"},
@@ -432,10 +416,6 @@ def _position_buttons(symbol, coin_id):
     return {
         "inline_keyboard": [
             [
-                {"text": "\u2795 Buy", "callback_data": f"pos:buy:{symbol}"},
-                {"text": "\u2796 Sell", "callback_data": f"pos:sell:{symbol}"},
-            ],
-            [
                 {"text": "\U0001f4cb Transactions", "callback_data": f"pos:tx:{symbol}"},
                 {"text": "\U0001f5d1 Archive", "callback_data": f"pos:archive:{symbol}"},
             ],
@@ -451,11 +431,10 @@ def _portfolio_edit_buttons():
     return {
         "inline_keyboard": [
             [
-                {"text": "\u2795 Buy", "callback_data": "cmd:buy"},
-                {"text": "\u2796 Sell", "callback_data": "cmd:sell"},
+                {"text": "\U0001f4e5 Import Portfolio", "callback_data": "cmd:import"},
+                {"text": "\U0001f4cb Transactions", "callback_data": "cmd:tx"},
             ],
             [
-                {"text": "\U0001f4cb Transactions", "callback_data": "cmd:tx"},
                 {"text": "\U0001f4b0 Cash", "callback_data": "cmd:cash"},
             ],
             [
@@ -627,9 +606,13 @@ def poll_updates():
                 logger.info(f"Command received: {text.split()[0]}")
                 handle_command(text)
             else:
-                active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-                if active:
-                    _handle_session_text(text)
+                # Check for portfolio URLs in text
+                if any(d in text.lower() for d in ["coingecko.com", "coinmarketcap.com", "coinmarketcap"]):
+                    _handle_import_portfolio([text])
+                else:
+                    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+                    if active:
+                        _handle_session_text(text)
     except requests.exceptions.ReadTimeout:
         pass
     except Exception as e:
@@ -678,9 +661,9 @@ def handle_callback(cb):
             send_message(p, buttons=btns)
             time.sleep(0.3)
     elif cb_data == "cmd:buy":
-        send_message("Usa: /buy <symbol> <quantity> <price> [fee]\nEj: /buy TAO 1.5 390")
+        send_message("\u274c Buy/Sell removed. Use /importportfolio to update your portfolio from CoinGecko/CMC.")
     elif cb_data == "cmd:sell":
-        send_message("Usa: /sell <symbol> <quantity> <price> [fee]\nEj: /sell TAO 1 420")
+        send_message("\u274c Buy/Sell removed. Use /importportfolio to update your portfolio from CoinGecko/CMC.")
     elif cb_data == "cmd:hype":
         results = social_scanner.get_hype(limit=10)
         msg = format_hype_list(results)
@@ -710,29 +693,8 @@ def handle_callback(cb):
         send_message(f"\U0001f4b0 Efectivo disponible: {format_usd(balance)}")
 
     # ── FLOW CALLBACKS (from menu buttons) ──
-    elif cb_data == "flow:buy:select_source":
-        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_waiting",
-            {"step": "waiting_token_input"})
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_token_input")
-        send_message(trading_ui.buy_flow_start_text(),
-                     buttons=trading_ui.buy_flow_start_buttons())
-
-    elif cb_data == "flow:sell:select":
-        positions = portfolio_db.get_active_positions()
-        if not positions:
-            send_message("No hay posiciones activas para vender.")
-            return
-        send_message(trading_ui.sell_flow_start_text(),
-                     buttons=trading_ui.sell_flow_position_buttons())
-
-    elif cb_data == "flow:buy:search":
-        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_waiting",
-            {"step": "waiting_token_input"})
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_token_input")
-        send_message(trading_ui.buy_flow_start_text(),
-                     buttons=trading_ui.buy_flow_start_buttons())
+    elif cb_data == "cmd:import":
+        _handle_import_portfolio([])
 
     elif cb_data == "flow:search":
         session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
@@ -741,42 +703,12 @@ def handle_callback(cb):
         session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_query")
         send_message("\U0001f50e <b>Buscar Token</b>\n\nEscribe el nombre, simbolo o ID del token:")
 
-    elif cb_data.startswith("flow:buy:token:"):
-        parts = cb_data.split(":")
-        slug = parts[3] if len(parts) > 3 else ""
-        sym = parts[4] if len(parts) > 4 else slug.upper()
-        _handle_buy_callback(f"buy:resolve:{slug}:{sym}")
-
-    elif cb_data.startswith("flow:sell:token:"):
-        parts = cb_data.split(":")
-        slug = parts[3] if len(parts) > 3 else ""
-        sym = slug.upper()
-        _handle_sell_callback(f"sell:select:{slug}:{sym}")
-
-    elif cb_data.startswith("flow:buy:select_result:"):
-        parts = cb_data.split(":")
-        slug = parts[3] if len(parts) > 3 else ""
-        sym = parts[4] if len(parts) > 4 else slug.upper()
-        _handle_buy_callback(f"buy:resolve:{slug}:{sym}")
-
-    # ── BUY FLOW CALLBACKS ──
-    elif cb_data.startswith("buy:"):
-        _handle_buy_callback(cb_data)
-
-    # ── SELL FLOW CALLBACKS ──
-    elif cb_data.startswith("sell:"):
-        _handle_sell_callback(cb_data)
+    elif any(cb_data.startswith(p) for p in ["flow:buy:", "flow:sell:", "buy:", "sell:", "pos:buy:", "pos:sell:"]):
+        send_message("\u274c Buy/Sell commands removed. Use /importportfolio to update your portfolio.")
 
     # ── DUMPS CALLBACKS ──
     elif cb_data.startswith("dumps:"):
         _handle_dumps_callback(cb_data)
-
-    elif cb_data.startswith("pos:buy:"):
-        sym = cb_data.split(":", 2)[2]
-        send_message(f"Usa: /buy {sym} <quantity> <price> [fee]\nEj: /buy {sym} 1 100")
-    elif cb_data.startswith("pos:sell:"):
-        sym = cb_data.split(":", 2)[2]
-        send_message(f"Usa: /sell {sym} <quantity> <price> [fee]\nEj: /sell {sym} 0.5 150")
     elif cb_data.startswith("pos:tx:"):
         sym = cb_data.split(":", 2)[2]
         handle_command(f"/transactions {sym}")
@@ -793,8 +725,7 @@ def handle_callback(cb):
                 f"Cost basis: {format_usd(pos['cost_basis_usd'])}\n\n"
                 f"Usa:\n"
                 f"/editposition {sym} <qty> <price> — Editar cantidad y precio\n"
-                f"/buy {sym} <qty> <price> [fee] — Comprar mas\n"
-                f"/sell {sym} <qty> <price> [fee] — Vender"
+                f"/importportfolio — Actualizar portafolio"
             )
             send_message(msg)
         else:
@@ -1042,8 +973,7 @@ def handle_command(text):
             portfolio_db.add_position(coin_id, sym)
             send_message(
                 f"\u2705 <b>{sym}</b> agregado al portafolio\n"
-                f"CoinGecko ID: {coin_id}\n"
-                f"Usa /buy {sym} <qty> <price> para registrar una compra"
+                f"CoinGecko ID: {coin_id}"
             )
 
         elif cmd == "/removetoken":
@@ -1056,182 +986,8 @@ def handle_command(text):
             portfolio_db.add_transaction(sym.lower(), sym, "remove", 0, 0, 0, notes="Token archived")
             send_message(f"\u2705 <b>{sym}</b> archivado. El historial se conserva.\nUsa /portfolioedit para ver opciones.")
 
-        elif cmd == "/buy":
-            session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-            if not args:
-                session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_waiting",
-                    {"step": "waiting_token_input"})
-                session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_token_input")
-                mid = send_loading("\u2795 <b>Buy Token</b>")
-                edit_message(
-                    "\U0001f50d <b>Buy Token</b>\n\n"
-                    "Send token ID, symbol, name or contract address.\n\n"
-                    "Example:\n<code>TAO</code>\n<code>bittensor</code>\n"
-                    "<code>0x1111111111166b7FE7bd91427724B487980aFc69</code>",
-                    message_id=mid)
-                return
-            sym = args[0].upper()
-            if len(args) >= 3:
-                try:
-                    qty = float(args[1])
-                    price = float(args[2])
-                except (ValueError, IndexError):
-                    send_message("\u274c Cantidad y precio deben ser numeros.\nEj: /buy TAO 1.5 390")
-                    return
-                if qty <= 0 or price <= 0:
-                    send_message("\u274c Cantidad y precio deben ser positivos")
-                    return
-                fee = float(args[3]) if len(args) > 3 else 0
-                send_processing()
-
-                pos = portfolio_db.get_position(sym)
-                if not pos:
-                    coin_data = search_coins(sym)
-                    if coin_data:
-                        coin_id = coin_data[0]["id"]
-                        pos = portfolio_db.add_position(coin_id, sym, coin_data[0].get("name", ""))
-                    else:
-                        send_message(f"\u274c {sym} no encontrado. Usa /addtoken {sym} <coin_id> primero")
-                        return
-
-                total_cost = qty * price + fee
-                updated = portfolio_db.update_position_after_buy(sym, qty, price, fee)
-                portfolio_db.add_transaction(
-                    updated["coin_id"], sym, "buy", qty, price, total_cost,
-                    fee_usd=fee, notes=""
-                )
-                portfolio_db.add_cash_movement("buy", -total_cost, f"Compra {qty} {sym} @ ${price}")
-
-                msg = (
-                    f"\u2705 <b>Compra registrada</b>\n\n"
-                    f"Token: {sym} \u2014 {updated.get('name', '')}\n"
-                    f"Cantidad comprada: {qty:.4f} {sym}\n"
-                    f"Precio: {format_usd(price)}\n"
-                    f"Fee: {format_usd(fee)}\n"
-                    f"Costo total: {format_usd(total_cost)}\n\n"
-                    f"Nueva cantidad: {updated['quantity']:.4f} {sym}\n"
-                    f"Nuevo precio promedio: {format_usd(updated['avg_entry_price'])}\n"
-                    f"Nuevo cost basis: {format_usd(updated['cost_basis_usd'])}"
-                )
-                send_message(msg)
-                return
-            # 1-2 args: show usage
-            send_message(
-                "\u274c Use guided mode: <b>/buy</b>\n\n"
-                "Or full format:\n<code>/buy TAO 1.5 390</code>\n<code>/buy TAO 1.5 390 2.50</code>"
-            )
-
-        elif cmd == "/sell":
-            if not args:
-                positions = portfolio_db.get_active_positions()
-                if not positions:
-                    send_message("No hay posiciones activas para vender.")
-                    return
-                session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-                send_message(trading_ui.sell_flow_start_text(),
-                             buttons=trading_ui.sell_flow_position_buttons())
-                return
-            sym = args[0].upper()
-            if len(args) >= 3:
-                try:
-                    qty = float(args[1])
-                    price = float(args[2])
-                except (ValueError, IndexError):
-                    send_message("\u274c Cantidad y precio deben ser numeros.\nEj: /sell TAO 1 420")
-                    return
-                if qty <= 0 or price <= 0:
-                    send_message("\u274c Cantidad y precio deben ser positivos")
-                    return
-                fee = float(args[3]) if len(args) > 3 else 0
-                send_processing()
-
-                pos = portfolio_db.get_position(sym)
-                if not pos:
-                    send_message(f"\u274c {sym} no esta en tu portafolio.\nUsa /buy {sym} <qty> <price> para comprar primero")
-                    return
-                if qty > pos["quantity"]:
-                    send_message(
-                        f"\u274c No puedes vender mas de lo que tienes.\n\n"
-                        f"{sym} disponible: {pos['quantity']:.4f}\n"
-                        f"Intentaste vender: {qty:.4f}"
-                    )
-                    return
-
-                result = portfolio_db.update_position_after_sell(sym, qty, price, fee)
-                if result is None:
-                    send_message("\u274c Error al procesar la venta")
-                    return
-                updated, realized_pnl, proceeds = result
-                total_val = qty * price
-                portfolio_db.add_transaction(
-                    updated["coin_id"], sym, "sell", qty, price, total_val,
-                    fee_usd=fee, realized_pnl_usd=realized_pnl, notes=""
-                )
-                portfolio_db.add_cash_movement("sell", proceeds - fee, f"Venta {qty} {sym} @ ${price}")
-
-                pnl_emoji = "\U0001f7e2" if realized_pnl >= 0 else "\U0001f534"
-                msg = (
-                    f"\u2705 <b>Venta registrada</b>\n\n"
-                    f"Token: {sym} \u2014 {updated.get('name', '')}\n"
-                    f"Cantidad vendida: {qty:.4f} {sym}\n"
-                    f"Precio venta: {format_usd(price)}\n"
-                    f"Fee: {format_usd(fee)}\n"
-                    f"Valor venta: {format_usd(total_val)}\n\n"
-                    f"P&L realizado: {pnl_emoji} {format_usd(realized_pnl)}\n"
-                    f"Cantidad restante: {updated['quantity']:.4f} {sym}\n"
-                    f"Cost basis restante: {format_usd(updated['cost_basis_usd'])}"
-                )
-                send_message(msg)
-                return
-            # 1-2 args: show usage
-            send_message(
-                "\u274c Use guided mode: <b>/sell</b>\n\n"
-                "Or full format:\n<code>/sell TAO 1 420</code>\n<code>/sell TAO 1 420 1.50</code>"
-            )
-
-        elif cmd == "/sellall":
-            sym = args[0].upper()
-            try:
-                price = float(args[1])
-            except (ValueError, IndexError):
-                send_message("❌ Precio debe ser un numero.\nEj: /sellall ARIA 0.052")
-                return
-            if price <= 0:
-                send_message("❌ El precio debe ser positivo")
-                return
-            fee = float(args[2]) if len(args) > 2 else 0
-            send_processing()
-
-            pos = portfolio_db.get_position(sym)
-            if not pos:
-                send_message(f"❌ {sym} no esta en tu portafolio")
-                return
-
-            qty = pos["quantity"]
-            result = portfolio_db.update_position_after_sell(sym, qty, price, fee)
-            if result is None:
-                send_message("❌ Error al procesar la venta total")
-                return
-            updated, realized_pnl, proceeds = result
-            total_val = qty * price
-            portfolio_db.add_transaction(
-                updated["coin_id"], sym, "sell_all", qty, price, total_val,
-                fee_usd=fee, realized_pnl_usd=realized_pnl, notes="Venta total"
-            )
-            portfolio_db.add_cash_movement("sell", proceeds - fee, f"Venta total {qty} {sym} @ ${price}")
-
-            pnl_emoji = "\U0001f7e2" if realized_pnl >= 0 else "\U0001f534"
-            msg = (
-                f"\u2705 <b>Venta total registrada</b>\n\n"
-                f"Token: {sym} — {updated.get('name', '')}\n"
-                f"Cantidad vendida: {qty:.4f} {sym}\n"
-                f"Precio venta: {format_usd(price)}\n"
-                f"Fee: {format_usd(fee)}\n"
-                f"Valor venta: {format_usd(total_val)}\n\n"
-                f"P&L realizado: {pnl_emoji} {format_usd(realized_pnl)}\n"
-                f"{sym} fue archivado del portafolio activo."
-            )
-            send_message(msg)
+        elif cmd == "/importportfolio":
+            _handle_import_portfolio(args)
 
         elif cmd == "/position":
             sym = args[0].upper()
@@ -1431,8 +1187,7 @@ def handle_command(text):
             lines.extend([
                 "",
                 "Acciones rapidas:",
-                "\u2022 /buy <sym> <qty> <price> — Comprar",
-                "\u2022 /sell <sym> <qty> <price> — Vender",
+                "\u2022 /importportfolio — Importar portafolio desde CoinGecko/CMC/texto",
                 "\u2022 /addtoken <sym> <coin_id> — Agregar token",
                 "\u2022 /removetoken <sym> — Archivar token",
                 "\u2022 /editposition <sym> <qty> <price> — Editar cantidad/precio",
@@ -1764,67 +1519,8 @@ def _handle_session_text(text):
         return
     flow = active.get("flow", "")
     step = active.get("step", "")
-    data = active.get("data", {})
 
-    if flow == "buy":
-        # Legacy buy flow - redirect to buy_waiting for proper handling
-        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_waiting",
-            {"step": "waiting_token_input", "query": text})
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_token_input")
-        send_message("\U0001f50e <b>Resolving token...</b>")
-        _handle_buy_waiting_text(text)
-        return
-
-    elif flow == "sell":
-        if step == "waiting_sell_amount":
-            try:
-                qty = float(text.replace(",", "."))
-            except ValueError:
-                send_message("\u274c La cantidad debe ser un numero.\nEj: 1.5")
-                return
-            slug = data.get("coin_id", "")
-            pos = portfolio_db.get_position(slug) if slug else None
-            if not pos:
-                send_message("Posicion no encontrada.")
-                return
-            if qty <= 0:
-                send_message("\u274c La cantidad debe ser positiva.")
-                return
-            if qty > pos["quantity"]:
-                send_message(
-                    f"\u274c No puedes vender mas de lo que tienes.\n"
-                    f"Disponible: {pos['quantity']:.4f}"
-                )
-                return
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-            _flow_sell_ask_price()
-
-        elif step == "waiting_sell_price":
-            try:
-                price = float(text.replace(",", "."))
-            except ValueError:
-                send_message("\u274c El precio debe ser un numero.\nEj: 420")
-                return
-            if price <= 0:
-                send_message("\u274c El precio debe ser positivo.")
-                return
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-            _flow_sell_ask_fee()
-
-        elif step == "waiting_sell_fee":
-            try:
-                fee = float(text.replace(",", "."))
-            except ValueError:
-                send_message("\u274c El fee debe ser un numero.\nEj: 1.50 o 0")
-                return
-            if fee < 0:
-                send_message("\u274c El fee no puede ser negativo.")
-                return
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
-            _flow_sell_confirm()
-
-    elif flow == "search_token":
+    if flow == "search_token":
         matches = search_coins(text)
         if not matches:
             send_message(f"No se encontro <b>{text}</b>. Intenta con otro nombre.",
@@ -1838,319 +1534,245 @@ def _handle_session_text(text):
         else:
             send_message(format_api_error("CoinGecko"))
         session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-
-
-def _build_slug_symbol_from_data(data):
-    return data.get("slug", ""), data.get("symbol", "")
-
-
-# ── BUY FLOW HANDLER ────────────────────────────────────────────────────────
-
-def _handle_buy_callback(cb_data):
-    parts = cb_data.split(":")
-    action = parts[1] if len(parts) > 1 else ""
-    slug = parts[2] if len(parts) > 2 else ""
-    symbol = parts[3] if len(parts) > 3 else slug.upper()
-
-    if action == "search":
+    else:
         session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_waiting",
-            {"step": "waiting_token_input"})
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_token_input")
-        send_message(trading_ui.buy_flow_start_text(),
-                     buttons=trading_ui.buy_flow_start_buttons())
+        send_message("\u2139\ufe0f Session closed.")
 
-    elif action in ("watchlist", "early", "trends"):
-        if action == "watchlist":
-            settings = storage.load_settings()
-            wl = settings.get("watchlist", {})
-            if not wl:
-                send_message("Watchlist vacia.")
-                return
-            kb = []
-            for wslug in wl:
-                kb.append([{"text": wslug, "callback_data": f"buy:resolve:{wslug}:{wslug}"}])
-            kb.append([{"text": "\u274c Close", "callback_data": "flow:cancel"}])
-            send_message("Select from watchlist:", buttons={"inline_keyboard": kb})
-        elif action == "early":
-            results = social_scanner.get_early(limit=8)
-            kb = []
-            for r in results:
-                s = r.get("symbol", r.get("slug", "?"))
-                sl = r.get("slug", s)
-                kb.append([{"text": f"{s} - {r.get('name', '')}",
-                           "callback_data": f"buy:resolve:{sl}:{s}"}])
-            kb.append([{"text": "\u274c Close", "callback_data": "flow:cancel"}])
-            send_message("Select token:", buttons={"inline_keyboard": kb})
-        elif action == "trends":
-            results = social_scanner.get_trends(limit=8)
-            kb = []
-            for r in results:
-                s = r.get("symbol", r.get("slug", "?"))
-                sl = r.get("slug", s)
-                kb.append([{"text": f"{s} - {r.get('name', '')}",
-                           "callback_data": f"buy:resolve:{sl}:{s}"}])
-            kb.append([{"text": "\u274c Close", "callback_data": "flow:cancel"}])
-            send_message("Select token:", buttons={"inline_keyboard": kb})
 
-    elif action == "resolve":
-        sym = symbol.upper()
-        send_message("\U0001f50e <b>Resolving token...</b>")
-        token = trading_ui.resolve_token(slug)
-        if not token:
-            send_message(f"\u274c No se pudo resolver {slug}.")
-            return
-        sym = token.get("symbol", sym)
-        slug = token.get("slug", slug)
-        text = trading_ui.token_card_from_resolved(token, config.TELEGRAM_CHAT_ID)
-        btns = trading_ui.buy_token_menu_buttons(slug, sym)
-        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_active", {
-            "slug": slug, "symbol": sym, "name": token.get("name", sym),
-            "current_price": token.get("current_price"),
-            "token_key": token.get("token_key", ""),
-            "source": token.get("source", "dexscreener"),
-            "chain_id": token.get("chain_id", ""),
-            "contract_address": token.get("contract_address", ""),
-            "pair_address": token.get("pair_address", ""),
-            "dex_id": token.get("dex_id", ""),
-        }, step="token_menu")
-        send_message(text, buttons=btns)
+# ── IMPORT PORTFOLIO ──────────────────────────────────────────────────────
 
-    elif action == "refresh":
-        token = trading_ui.resolve_token(slug)
-        if not token:
-            send_message(f"No se pudo refrescar {symbol}.")
-            return
-        text = trading_ui.token_card_from_resolved(token, config.TELEGRAM_CHAT_ID)
-        btns = trading_ui.buy_token_menu_buttons(slug, symbol)
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if s:
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "current_price", token.get("current_price"))
-        send_message(text, buttons=btns)
+PORTFOLIO_LINE_RE = re.compile(
+    r"^\s*(?P<sym>[A-Za-z0-9]+)\s*[:\-]?\s*(?P<qty>[\d,.]+)\s*(?:@|at|a)\s*\$?(?P<price>[\d,.]+)\s*$",
+    re.IGNORECASE
+)
 
-    elif action in ("pos", "position"):
-        token = trading_ui.resolve_token(slug)
-        if not token:
-            token = {"slug": slug, "symbol": symbol, "name": symbol}
-        ptxt, pbtns = trading_ui.build_position_view(symbol, token)
-        if pbtns:
-            send_message(ptxt, buttons=pbtns)
-        else:
-            send_message(ptxt)
+CG_PORTFOLIO_URL_RE = re.compile(
+    r"coingecko\.com/(?:en/)?portfolio(?:/public)?/([a-zA-Z0-9\-]+)",
+    re.IGNORECASE
+)
 
-    elif action == "quick":
-        amount_usd = float(parts[4]) if len(parts) > 4 else 0
-        sess = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not sess:
-            return
-        price = sess["data"].get("current_price")
-        if not price or price <= 0:
-            send_message("Precio actual no disponible. Edita el precio manualmente.",
-                         buttons=trading_ui.buy_price_buttons(slug, symbol))
-            return
-        qty = round(amount_usd / price, 6)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount_usd)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "buy_confirm")
-        fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        fresh_data = fresh["data"] if fresh else sess["data"]
-        msg = trading_ui.build_buy_confirm_text(slug, symbol, fresh_data)
-        btns = trading_ui.buy_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
+CMC_PORTFOLIO_URL_RE = re.compile(
+    r"portfolio\.coinmarketcap\.com/(?:portfolios/)?([a-zA-Z0-9\-]+)",
+    re.IGNORECASE
+)
 
-    elif action == "custom":
-        ok = session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_amount")
-        if not ok:
-            logger.warning(f"SESSION_MISSING action=custom cannot set step, creating new session")
-            sym = symbol.upper()
-            token = trading_ui.resolve_token(slug) if slug else None
-            data = {"slug": slug, "symbol": sym}
-            if token:
-                data["current_price"] = token.get("current_price")
-                data["token_key"] = token.get("token_key", "")
-                data["chain_id"] = token.get("chain_id", "")
-                data["contract_address"] = token.get("contract_address", "")
-            session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_active", data, step="waiting_buy_amount")
-        logger.info(f"SESSION_SET key={config.TELEGRAM_CHAT_ID}:{config.TELEGRAM_CHAT_ID} flow=buy step=waiting_buy_amount")
-        send_message("\U0001f4b5 How much do you want to buy in USDT?\n\nExample:\n100")
 
-    elif action == "askprice":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
-        price = None
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if s:
-            price = s["data"].get("current_price")
-        hint = f"Current detected price: {format_usd(price)}" if price else ""
+def _handle_import_portfolio(args):
+    text = " ".join(args).strip()
+    if not text:
         send_message(
-            f"Purchase price:\n\n{hint}\n\nEnter a custom price in USD:")
+            "\U0001f4e5 <b>Import Portfolio</b>\n\n"
+            "Send a CoinGecko or CoinMarketCap portfolio link, "
+            "or paste holdings in this format:\n\n"
+            "<code>TAO: 4.7 @ 362</code>\n"
+            "<code>ARIA: 10000 @ 0.15</code>\n"
+            "<code>BOB: 5000 @ 0.008</code>\n\n"
+            "Or use:\n"
+            "<code>/importportfolio TAO: 4.7 @ 362</code>\n"
+            "One token per line / message."
+        )
+        return
 
-    elif action == "usecurrent":
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        price = s["data"].get("current_price")
-        if price and price > 0:
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-            fresh_data = fresh["data"] if fresh else s["data"]
-            amount = fresh_data.get("amount_usd", 0)
-            if amount > 0 and not fresh_data.get("quantity"):
-                qty = round(amount / price, 6)
-                session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
-            send_message(
-                f"\U0001f4b5 Price set: {format_usd(price)}\n\n"
-                f"Enter fee in USD (or 0 for no fee):\n"
-                f"Example:\n2.50",
-                buttons={"inline_keyboard": [[{"text": "\U0001f4b5 No Fee", "callback_data": f"buy:no_fee:{slug}:{symbol}"}]]})
+    cg_match = CG_PORTFOLIO_URL_RE.search(text)
+    cmc_match = CMC_PORTFOLIO_URL_RE.search(text)
+
+    if cg_match or cmc_match:
+        send_message("\U0001f50e <b>Fetching portfolio...</b>")
+        try:
+            result = _fetch_portfolio_from_url(text)
+            if result:
+                _apply_portfolio(result)
+            else:
+                send_message("\u274c Could not parse portfolio from URL. "
+                             "Try pasting your holdings in text format instead.")
+        except Exception as e:
+            logger.error(f"PORTFOLIO_IMPORT_URL error: {e}", exc_info=True)
+            send_message(f"\u26a0\ufe0f Error fetching portfolio: {e}")
+        return
+
+    lines = text.strip().split("\n")
+    entries = []
+    errors = []
+    for i, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line:
+            continue
+        m = PORTFOLIO_LINE_RE.match(line)
+        if m:
+            try:
+                sym = m.group("sym").upper()
+                qty = float(m.group("qty").replace(",", ""))
+                price = float(m.group("price").replace(",", ""))
+                if qty > 0 and price > 0:
+                    entries.append({"symbol": sym, "quantity": qty, "price": price})
+                else:
+                    errors.append(f"Line {i}: qty and price must be positive")
+            except ValueError as e:
+                errors.append(f"Line {i}: invalid number: {e}")
+        elif "coingecko.com" in line.lower() or "coinmarketcap.com" in line.lower() or "coinmarketcap" in line.lower():
+            errors.append(f"Line {i}: URL not supported yet. Please use direct /importportfolio with URL.")
         else:
-            send_message("Precio actual no disponible. Ingresa precio manual.",
-                         buttons=trading_ui.buy_price_buttons(slug, symbol))
+            errors.append(f"Line {i}: could not parse. Use format: <code>SYM: qty @ price</code>")
 
-    elif action == "no_fee":
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", 0)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "buy_confirm")
-        fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        data = fresh["data"] if fresh else {}
-        msg = trading_ui.build_buy_confirm_text(slug, symbol, data)
-        btns = trading_ui.buy_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
+    if not entries:
+        send_message("\u274c No valid entries found.\n\n"
+                     "Use format: <code>SYM: qty @ price</code>\n"
+                     "Example: <code>TAO: 4.7 @ 362</code>")
+        if errors:
+            send_message("\n".join(errors[:5]))
+        return
 
-    elif action == "editprice":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
-        send_message("\u270f\ufe0f Enter purchase price:\n\nExample:\n418.20")
-
-    elif action == "editamt":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_amount")
-        send_message("\u270f\ufe0f Enter new amount in USDT:")
-
-    elif action == "editfee":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
-        send_message("\u270f\ufe0f Enter fee in USD (or 0):")
-
-    elif action == "confirm":
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        msg = trading_ui.execute_buy(slug, symbol, s["data"])
-        send_message(msg)
+    _apply_portfolio(entries)
 
 
-# ── SELL FLOW HANDLER ────────────────────────────────────────────────────────
-
-def _handle_sell_callback(cb_data):
-    parts = cb_data.split(":")
-    action = parts[1] if len(parts) > 1 else ""
-    slug = parts[2] if len(parts) > 2 else ""
-    symbol = parts[3] if len(parts) > 3 else slug.upper()
-
-    if action == "select":
-        pos = portfolio_db.get_position(symbol) if symbol else None
-        if not pos:
-            send_message(f"No position for {symbol}.")
-            return
-        text, price = trading_ui.sell_flow_position_text(slug, symbol)
-        if not text:
-            send_message("Position not found.")
-            return
-        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "sell_active", {
-            "slug": slug, "symbol": symbol, "name": pos.get("name", symbol),
-            "current_price": price, "quantity": pos["quantity"],
+def _fetch_portfolio_from_url(url):
+    try:
+        resp = requests.get(url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "position_selected")
-        send_message(text, buttons=trading_ui.sell_pct_buttons(slug, symbol))
+        resp.raise_for_status()
+        html = resp.text
+    except Exception as e:
+        logger.error(f"PORTFOLIO_FETCH error: {e}")
+        return None
 
-    elif action == "pct":
-        pct = float(parts[4]) if len(parts) > 4 else 0
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        data = s["data"]
-        qty = round(data.get("quantity", 0) * pct / 100, 6)
-        price = data.get("current_price")
-        if not price or price <= 0:
-            send_message("Current price not available.",
-                         buttons=trading_ui.sell_price_buttons(slug, symbol))
-            return
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_sell")
-        msg = trading_ui.build_sell_confirm_text(slug, symbol, data)
-        btns = trading_ui.sell_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
+    entries = []
 
-    elif action == "custom":
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        max_qty = s["data"].get("quantity", 0)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_qty")
-        send_message(f"\U0001f4b5 Enter qty to sell (max: {max_qty:.6f}):")
+    import re as _re
+    # Try to find JSON data in script tags with portfolio data
+    # CoinGecko often embeds __NEXT_DATA__ or similar
+    next_data = _re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, _re.DOTALL)
+    if next_data:
+        try:
+            import json
+            data = json.loads(next_data.group(1))
+            holdings = (data.get("props", {})
+                        .get("pageProps", {})
+                        .get("portfolio", {})
+                        .get("holdings", []))
+            if holdings:
+                for h in holdings:
+                    sym = h.get("coin", {}).get("symbol", "").upper()
+                    qty = h.get("quantity", 0)
+                    price = h.get("avgPrice", 0) or h.get("price", 0)
+                    if sym and qty > 0 and price > 0:
+                        entries.append({"symbol": sym, "quantity": qty, "price": price})
+                if entries:
+                    return entries
+        except Exception:
+            pass
 
-    elif action == "askprice":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_price_input")
-        price = None
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if s:
-            price = s["data"].get("current_price")
-        hint = f"Current detected price: {format_usd(price)}" if price else ""
-        send_message(
-            f"Sell price:\n\n{hint}\n\nEnter a custom price in USD:")
+    # Try to find JSON data in window.__INITIAL_STATE__ or similar
+    state_match = _re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, _re.DOTALL)
+    if state_match:
+        try:
+            import json
+            data = json.loads(state_match.group(1))
+            holdings = (data.get("portfolio", {})
+                        .get("holdings", []))
+            if holdings:
+                for h in holdings:
+                    sym = h.get("symbol", "").upper()
+                    qty = h.get("quantity", 0)
+                    price = h.get("avgPrice", 0) or h.get("price", 0)
+                    if sym and qty > 0 and price > 0:
+                        entries.append({"symbol": sym, "quantity": qty, "price": price})
+                if entries:
+                    return entries
+        except Exception:
+            pass
 
-    elif action == "usecurrent":
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        price = s["data"].get("current_price")
-        if price and price > 0:
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-            data = s["data"]
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_sell")
-            msg = trading_ui.build_sell_confirm_text(slug, symbol, data)
-            btns = trading_ui.sell_confirm_buttons(slug, symbol)
-            send_message(msg, buttons=btns)
-        else:
-            send_message("Current price not available. Enter manually.",
-                         buttons=trading_ui.sell_price_buttons(slug, symbol))
+    # Try simple table parsing (HTML fallback)
+    rows = _re.findall(
+        r'<tr[^>]*>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*>(.*?)</td>.*?<td[^>]*>(.*?)</td>.*?</tr>',
+        html, _re.DOTALL
+    )
+    for cols in rows:
+        price = _re.search(r'\$?([\d,]+\.?\d*)', cols[2])
+        qty = _re.search(r'([\d,]+\.?\d*)', cols[1])
+        sym = _re.search(r'([A-Z]{2,10})', cols[0], re.IGNORECASE)
+        if price and qty and sym:
+            try:
+                entries.append({
+                    "symbol": sym.group(1).upper(),
+                    "quantity": float(qty.group(1).replace(",", "")),
+                    "price": float(price.group(1).replace(",", "")),
+                })
+            except ValueError:
+                pass
 
-    elif action == "refresh":
-        pos = portfolio_db.get_position(symbol)
-        if not pos:
-            send_message(f"No position for {symbol}.")
-            return
-        text, price = trading_ui.sell_flow_position_text(slug, symbol)
-        if text:
-            send_message(text, buttons=trading_ui.sell_pct_buttons(slug, symbol))
-
-    elif action == "editprice":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_price_edit")
-        send_message("\u270f\ufe0f Enter new sell price in USD:")
-
-    elif action == "editqty":
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        max_qty = s["data"].get("quantity", 0)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_qty")
-        send_message(f"\u270f\ufe0f Enter new qty (max: {max_qty:.6f}):")
-
-    elif action == "editfee":
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_fee")
-        send_message("\u270f\ufe0f Enter fee in USD (or 0):")
-
-    elif action == "confirm":
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not s:
-            return
-        msg = trading_ui.execute_sell(slug, symbol, s["data"])
-        if msg:
-            send_message(msg)
+    return entries if entries else None
 
 
-# ── DUMPS HANDLER ───────────────────────────────────────────────────────────
+def _apply_portfolio(entries):
+    if not entries:
+        send_message("\u274c No portfolio entries to apply.")
+        return
+
+    from . import portfolio_db as pdb
+    is_test = 1 if config.TEST_MODE else 0
+    results = {"updated": 0, "added": 0, "errors": 0}
+    errors = []
+
+    for entry in entries:
+        sym = entry["symbol"]
+        qty = entry["quantity"]
+        price = entry["price"]
+        try:
+            pos = pdb.get_position(symbol=sym, is_test=is_test)
+            if pos:
+                pdb.edit_position(sym, qty, price)
+                pdb.add_transaction(
+                    pos["coin_id"], sym, "import_adjustment",
+                    qty, price, qty * price,
+                    notes=f"Portfolio import: {qty} @ ${price}",
+                    is_test=is_test
+                )
+                results["updated"] += 1
+            else:
+                # Try to resolve token for coin_id
+                coin_id = sym.lower()
+                name = sym
+                try:
+                    tok = trading_ui.resolve_token(sym)
+                    if tok:
+                        coin_id = tok.get("slug", coin_id)
+                        name = tok.get("name", name)
+                except Exception:
+                    pass
+                pdb.add_position(coin_id, sym, name, is_test=is_test)
+                pos2 = pdb.get_position(symbol=sym, is_test=is_test)
+                if pos2:
+                    pdb.edit_position(sym, qty, price)
+                    pdb.add_transaction(
+                        coin_id, sym, "import",
+                        qty, price, qty * price,
+                        notes=f"Portfolio import: {qty} @ ${price}",
+                        is_test=is_test
+                    )
+                    results["added"] += 1
+                else:
+                    results["errors"] += 1
+                    errors.append(f"{sym}: could not create position")
+        except Exception as e:
+            results["errors"] += 1
+            errors.append(f"{sym}: {e}")
+            logger.error(f"PORTFOLIO_IMPORT error {sym}: {e}")
+
+    total = results["updated"] + results["added"]
+    msg_parts = [
+        f"\u2705 <b>Portfolio imported</b>\n",
+        f"Tokens processed: {total}",
+        f"Updated: {results['updated']}",
+        f"Added: {results['added']}",
+    ]
+    if results["errors"]:
+        msg_parts.append(f"Errors: {results['errors']}")
+    if errors:
+        msg_parts.append("")
+        msg_parts.append("<b>Errors:</b>")
+        msg_parts.extend(errors[:5])
+    send_message("\n".join(msg_parts))
 
 _dumps_cache = {"coins": [], "window": config.DUMPS_DEFAULT_WINDOW}
 
@@ -2242,480 +1864,4 @@ def _handle_dumps_callback(cb_data):
 
 # ── SESSION TEXT HANDLERS ────────────────────────────────────────────────────
 
-def _handle_buy_waiting_text(text):
-    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-    if not active or active.get("flow") != "buy_waiting":
-        return False
-    step = active.get("step", "")
-    data = active.get("data", {})
 
-    if step == "waiting_token_input":
-        send_message("\U0001f50e <b>Resolving token...</b>")
-        token = trading_ui.resolve_token(text)
-        if not token:
-            send_message(f"\u274c No se encontro <b>{text}</b>. Intenta con otro nombre o ID.",
-                         buttons={"inline_keyboard": [[
-                             {"text": "\u274c Cancel", "callback_data": "flow:cancel"}
-                         ]]})
-            return True
-        sym = token.get("symbol", text.upper())
-        slug = token.get("slug", text.lower())
-        card = trading_ui.token_card_from_resolved(token, config.TELEGRAM_CHAT_ID)
-        btns = trading_ui.buy_token_menu_buttons(slug, sym)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "slug", slug)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "symbol", sym)
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "name", token.get("name", sym))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "current_price", token.get("current_price"))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "token_key", token.get("token_key", ""))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "source", token.get("source", "dexscreener"))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "chain_id", token.get("chain_id", ""))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "contract_address", token.get("contract_address", ""))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "pair_address", token.get("pair_address", ""))
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "dex_id", token.get("dex_id", ""))
-        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_active", {
-            "slug": slug, "symbol": sym, "name": token.get("name", sym),
-            "current_price": token.get("current_price"),
-            "token_key": token.get("token_key", ""),
-            "source": token.get("source", "dexscreener"),
-            "chain_id": token.get("chain_id", ""),
-            "contract_address": token.get("contract_address", ""),
-            "pair_address": token.get("pair_address", ""),
-            "dex_id": token.get("dex_id", ""),
-        }, step="token_menu")
-        send_message(card, buttons=btns)
-        return True
-
-    return False
-
-
-def _handle_buy_active_text(text):
-    try:
-        active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not active or active.get("flow") != "buy_active":
-            return False
-        step = active.get("step", "")
-        data = active.get("data", {})
-        slug = data.get("slug", "")
-        symbol = data.get("symbol", "")
-
-        if step == "waiting_buy_amount":
-            from .session import parse_positive_decimal as _parse_dec
-            amt = _parse_dec(text)
-            if amt is None:
-                send_message("\u274c Invalid amount.\n\nPlease enter a positive number.\nExample:\n100")
-                return True
-            amount = float(amt)
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount)
-            logger.info(f"SESSION_UPDATE key={config.TELEGRAM_CHAT_ID}:{config.TELEGRAM_CHAT_ID} amount_usd={amount}")
-            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-            price = fresh["data"].get("current_price") if fresh else data.get("current_price")
-            if price is not None and price > 0:
-                qty = round(amount / price, 6)
-                session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-                hint = f"Current detected price: {format_usd(price)}"
-                session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
-                send_message(
-                    f"\U0001f4b5 Amount: {amount} USDT\n\n"
-                    f"Purchase price:\n{hint}\n\n"
-                    f"Use current price or enter custom price.",
-                    buttons=trading_ui.buy_price_buttons(slug, symbol))
-            else:
-                session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price_input")
-                logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_amount to=waiting_buy_price_input reason=no_current_price")
-                send_message(
-                    f"\U0001f4b5 Amount received: {amount} USDT\n\n"
-                    f"\u26a0\ufe0f Current price is not available.\n\n"
-                    f"Enter purchase price manually:\n"
-                    f"Example:\n0.0042")
-            return True
-
-        elif step == "waiting_buy_price_input":
-            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-            if not fresh:
-                send_message("\u26a0\ufe0f Session expired. Please start again with /buy.")
-                return True
-            fresh_data = fresh.get("data", {})
-            from .session import parse_positive_decimal as _parse_dec
-            px = _parse_dec(text)
-            if px is None:
-                send_message("\u274c Enter a valid price.\nExample:\n0.0042")
-                return True
-            price = float(px)
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-            if "quantity" not in fresh_data or not fresh_data["quantity"]:
-                amount = fresh_data.get("amount_usd", 0)
-                if amount > 0:
-                    qty = round(amount / price, 6)
-                    session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
-            logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_price_input to=waiting_buy_fee")
-            send_message(
-                f"\U0001f4b5 Price set: {format_usd(price)}\n\n"
-                f"Enter fee in USD (or 0 for no fee):\n"
-                f"Example:\n2.50",
-                buttons={"inline_keyboard": [[{"text": "\U0001f4b5 No Fee", "callback_data": f"buy:no_fee:{slug}:{symbol}"}]]})
-            return True
-
-        elif step == "waiting_buy_fee":
-            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-            if not fresh:
-                send_message("\u26a0\ufe0f Session expired. Please start again with /buy.")
-                return True
-            fresh_data = fresh.get("data", {})
-            from .session import parse_non_negative_decimal as _parse_nonneg
-            fee_dec = _parse_nonneg(text)
-            if fee_dec is None:
-                send_message("\u274c Enter a valid fee (e.g. 2.50 or 0).")
-                return True
-            fee = float(fee_dec)
-            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "buy_confirm")
-            logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_fee to=buy_confirm fee={fee}")
-            msg = trading_ui.build_buy_confirm_text(slug, symbol, fresh_data)
-            btns = trading_ui.buy_confirm_buttons(slug, symbol)
-            send_message(msg, buttons=btns)
-            return True
-
-    except Exception as e:
-        logger.error(f"SESSION_ERROR flow=buy_active step={step} text={text[:80]} error={e}", exc_info=True)
-        send_message(f"\u26a0\ufe0f Unexpected error. Please start again with /buy or /cancel.")
-        return True
-
-    return False
-
-
-def _handle_sell_active_text(text):
-    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-    if not active or active.get("flow") != "sell_active":
-        return False
-    step = active.get("step", "")
-    data = active.get("data", {})
-    slug = data.get("slug", "")
-    symbol = data.get("symbol", "")
-
-    if step == "waiting_sell_qty":
-        try:
-            qty = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid qty.")
-            return True
-        max_qty = data.get("quantity", 0)
-        if qty <= 0 or qty > max_qty:
-            send_message(f"Qty must be between 0 and {max_qty:.6f}.")
-            return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
-        price = data.get("current_price")
-        if price and price > 0:
-            hint = f"Current detected price: {format_usd(price)}"
-            send_message(
-                f"Sell price:\n\n{hint}\n\nUse current price or enter custom.",
-                buttons=trading_ui.sell_price_buttons(slug, symbol))
-        else:
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_price_input")
-            send_message("Enter sell price in USD:")
-        return True
-
-    elif step == "waiting_sell_price_input":
-        try:
-            price = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid price.")
-            return True
-        if price <= 0:
-            send_message("Price must be positive.")
-            return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_sell")
-        msg = trading_ui.build_sell_confirm_text(slug, symbol, data)
-        btns = trading_ui.sell_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
-        return True
-
-    elif step == "waiting_sell_price_edit":
-        try:
-            price = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid price.")
-            return True
-        if price <= 0:
-            send_message("Price must be positive.")
-            return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_sell")
-        msg = trading_ui.build_sell_confirm_text(slug, symbol, data)
-        btns = trading_ui.sell_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
-        return True
-
-    elif step == "waiting_sell_fee":
-        try:
-            fee = float(text.replace(",", "."))
-        except ValueError:
-            send_message("Enter a valid fee (e.g. 1.50).")
-            return True
-        if fee < 0:
-            send_message("Fee cannot be negative.")
-            return True
-        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_sell")
-        msg = trading_ui.build_sell_confirm_text(slug, symbol, data)
-        btns = trading_ui.sell_confirm_buttons(slug, symbol)
-        send_message(msg, buttons=btns)
-        return True
-
-    return False
-
-
-# ── CONTRACT TESTS ──────────────────────────────────────────────────────────
-
-TEST_CONTRACTS = [
-    {"name": "ALLO", "symbol": "ALLO", "contract": "0x8408d45b61f5823298f19a09b53b7339c0280489"},
-    {"name": "TROLL", "symbol": "TROLL", "contract": "5UUH9RTDiSpq6HKS6bp4NdU9PNJpXRXuiw6ShBTBhgH2"},
-    {"name": "bONK", "symbol": "bONK", "contract": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"},
-]
-
-
-def _run_contract_tests():
-    send_processing()
-    results = []
-    for tc in TEST_CONTRACTS:
-        result = _test_single_contract(tc)
-        results.append(result)
-        logger.info(f"TEST_CONTRACT token={tc['name']} result={'OK' if result.get('passed') else 'FAIL'}")
-
-    lines = ["\U0001f9ea <b>Contract Search Test Results</b>\n"]
-    for r in results:
-        name = r.get("name", "?")
-        passed = r.get("passed", False)
-        icon = "\u2705" if passed else "\u274c"
-        lines.append(f"{icon} <b>{name}</b>")
-        lines.append(f"Input type: {r.get('family', '?')}")
-        lines.append(f"Resolved: {'✅' if r.get('resolved') else '❌'}")
-        if not r.get("resolved") and r.get("error"):
-            lines.append(f"Reason: {r['error']}")
-        if r.get("endpoint"):
-            lines.append(f"Endpoint: {r['endpoint']}")
-        if r.get("price"):
-            lines.append(f"Price: ✅")
-        if r.get("liquidity"):
-            lines.append(f"Liquidity: ✅")
-        lines.append(f"Buy flow: {'✅' if r.get('buy_ok') else '❌'}")
-        lines.append(f"Sell flow: {'✅' if r.get('sell_ok') else '❌'}")
-        lines.append("")
-
-    send_message("\n".join(lines))
-    return results
-
-
-def _test_single_contract(tc):
-    name = tc["name"]
-    symbol = tc["symbol"]
-    contract = tc["contract"]
-    result = {"name": name, "symbol": symbol, "contract": contract,
-              "passed": False, "resolved": False, "buy_ok": False,
-              "sell_ok": False, "family": "?", "error": "", "endpoint": ""}
-
-    family = trading_ui.detect_token_input_type(contract)
-    result["family"] = family
-
-    token = trading_ui.resolve_token(contract)
-    if not token:
-        result["error"] = "No se pudo resolver el contrato"
-        return result
-
-    result["resolved"] = True
-    if token.get("chain_id"):
-        result["endpoint"] = f"dexscreener:{token['chain_id']}"
-    else:
-        result["endpoint"] = "dexscreener:search"
-
-    price = token.get("current_price")
-    liq = token.get("liquidity_usd")
-    if price:
-        result["price"] = True
-    if liq:
-        result["liquidity"] = True
-
-    old_test_mode = config.TEST_MODE
-    try:
-        config.TEST_MODE = True
-
-        slug = token.get("slug", contract)
-        sym = token.get("symbol", symbol)
-
-        data = {
-            "slug": slug, "symbol": sym, "name": token.get("name", name),
-            "current_price": price, "quantity": 0,
-            "amount_usd": 10, "price": price or 0.001,
-            "fee": 0,
-            "token_key": token.get("token_key", ""),
-            "source": token.get("source", "dexscreener"),
-            "chain_id": token.get("chain_id", ""),
-            "contract_address": token.get("contract_address", ""),
-            "pair_address": token.get("pair_address", ""),
-            "dex_id": token.get("dex_id", ""),
-        }
-
-        msg = trading_ui.build_buy_confirm_text(slug, sym, data)
-        if msg:
-            result["buy_ok"] = True
-
-        sell_data = {
-            "slug": slug, "symbol": sym, "name": token.get("name", name),
-            "quantity": 1, "price": price or 0.001,
-            "fee": 0, "token_key": token.get("token_key", ""),
-        }
-        msg2 = trading_ui.build_sell_confirm_text(slug, sym, sell_data)
-        if msg2:
-            result["sell_ok"] = True
-
-    except Exception as e:
-        if not result.get("error"):
-            result["error"] = str(e)
-    finally:
-        config.TEST_MODE = old_test_mode
-
-    result["passed"] = all([
-        result["resolved"],
-        result.get("buy_ok"),
-        result.get("sell_ok"),
-    ])
-    return result
-
-
-# ── TEST REGISTER FLOW ────────────────────────────────────────────────────
-
-def _run_test_register():
-    from . import portfolio_db as pdb
-    from . import session as sess_mgr
-
-    results = {"session_capture": False, "buy_insert": False,
-               "position_update": False, "sell_insert": False,
-               "position_after_sell": False, "session_clear": False}
-    old_test_mode = config.TEST_MODE
-    try:
-        config.TEST_MODE = True
-        pdb.clear_test_data()
-
-        sym = "TEST"
-        slug = "test-token-for-register"
-        token_key = "dexscreener:test:test"
-        price = 0.42
-        qty = 10.0
-        amount = qty * price
-        fee = 0.5
-
-        # 1. Create a position
-        pos = pdb.add_position(
-            slug, sym, "Test Token",
-            token_key=token_key, source="dexscreener",
-            chain_id="test", contract_address="0xtest",
-            pair_address="0xtestpair", dex_id="testdex",
-            is_test=1
-        )
-        if pos:
-            results["session_capture"] = True
-
-        # 2. Buy
-        updated = pdb.update_position_after_buy(
-            sym, qty, price, fee, token_key=token_key, is_test=1
-        )
-        if updated:
-            results["buy_insert"] = True
-
-        # 3. Verify position
-        pos2 = pdb.get_position(symbol=sym, token_key=token_key, is_test=1)
-        if pos2 and pos2["quantity"] == qty:
-            results["position_update"] = True
-
-        # 4. Sell half
-        half_qty = qty / 2
-        result = pdb.update_position_after_sell(
-            sym, half_qty, price, 0, token_key=token_key, is_test=1
-        )
-        if result:
-            results["sell_insert"] = True
-            updated2, rpnl, proceeds = result
-            if updated2 and updated2["quantity"] == half_qty:
-                results["position_after_sell"] = True
-
-        # 5. Cancel/clear session
-        sess_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
-        if not sess_mgr.get_session(config.TELEGRAM_CHAT_ID):
-            results["session_clear"] = True
-
-        pdb.clear_test_data()
-    except Exception as e:
-        logger.error(f"TEST_REGISTER error: {e}", exc_info=True)
-    finally:
-        config.TEST_MODE = old_test_mode
-
-    passed = all(results.values())
-    lines = [
-        "\U0001f9ea <b>Register Flow Test</b>\n",
-    ]
-    for k, v in results.items():
-        label = k.replace("_", " ").title()
-        icon = "\u2705" if v else "\u274c"
-        lines.append(f"{icon} {label}")
-    lines.append("")
-    lines.append(f"<b>Result: {'PASS' if passed else 'FAIL'}</b>")
-    send_message("\n".join(lines))
-
-
-# ── SESSION INPUT ROUTER ──────────────────────────────────────────────────
-_original_handle_session_text = _handle_session_text
-
-def _session_handle_buy_input(text, session):
-    step = session.get("step", "")
-    if step == "waiting_buy_amount":
-        return _handle_buy_active_text(text)
-    if step in ("waiting_buy_price_input", "waiting_buy_fee"):
-        return _handle_buy_active_text(text)
-    logger.warning(f"SESSION_UNKNOWN_STEP flow=buy step={step} text={text[:50]}")
-    send_message("\u26a0\ufe0f No esperaba texto en este paso. Usa los botones o /cancel.")
-    send_message("\U0001f4a1 <b>Buy Token</b>\n\nSend token ID, symbol, name or contract address.",
-                 buttons=trading_ui.buy_flow_start_buttons())
-    return True
-
-
-def _session_handle_sell_input(text, session):
-    step = session.get("step", "")
-    if step in ("waiting_sell_qty", "waiting_sell_price_input", "waiting_sell_price_edit", "waiting_sell_fee"):
-        return _handle_sell_active_text(text)
-    logger.warning(f"SESSION_UNKNOWN_STEP flow=sell step={step} text={text[:50]}")
-    send_message("\u26a0\ufe0f No esperaba texto en este paso. Usa los botones o /cancel.")
-    send_message("\U0001f4a1 <b>Sell Token</b>\n\nSelect a position:",
-                 buttons=trading_ui.sell_flow_position_buttons())
-    return True
-
-
-def _handle_session_input(text):
-    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-    if not active:
-        return False
-    flow = active.get("flow", "")
-    step = active.get("step", "")
-    logger.info(f"SESSION_INPUT key={config.TELEGRAM_CHAT_ID}:{config.TELEGRAM_CHAT_ID} flow={flow} step={step} text={text[:80]}")
-
-    if flow == "buy_waiting":
-        return _handle_buy_waiting_text(text)
-    if flow == "buy_active":
-        return _session_handle_buy_input(text, active)
-    if flow == "sell" or flow == "sell_active":
-        return _session_handle_sell_input(text, active)
-    return False
-
-
-def _patched_handle_session_text(text):
-    try:
-        if _handle_session_input(text):
-            return
-        _original_handle_session_text(text)
-    except Exception as e:
-        logger.error(f"SESSION_ERROR text={text[:80]} error={e}", exc_info=True)
-        send_message(f"\u26a0\ufe0f Unexpected error processing your input.\n\nPlease try again or use /cancel.")
-
-
-_handle_session_text = _patched_handle_session_text
