@@ -4,6 +4,7 @@ from . import config
 from .logger import logger
 from .coingecko_client import fetch_all_market_coins, get_api_stats
 from .alerts import check_alerts, save_price_snapshots
+from . import portfolio_db
 from .telegram_bot import (
     poll_updates, send_alert, send_portfolio_report, send_startup_msg,
     delete_webhook, set_bot_commands, send_batch_hype_alerts,
@@ -79,6 +80,8 @@ def run_main_loop():
     global last_crash_time, last_portfolio_time, last_social_scan_time
 
     logger.info("Bot started — v3 modular")
+    portfolio_db.init_db()
+    portfolio_db.migrate_from_json()
     last_crash_time = time.time()
     last_portfolio_time = 0
     last_social_scan_time = 0

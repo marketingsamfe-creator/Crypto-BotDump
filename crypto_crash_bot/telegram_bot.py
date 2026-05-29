@@ -2,6 +2,7 @@ import time
 from datetime import datetime
 import requests
 from . import config, storage, cache
+from . import portfolio_db
 from .logger import logger
 from .coingecko_client import (
     fetch_coin_detail, fetch_market_coins, search_coins, get_api_stats,
@@ -13,7 +14,7 @@ from .formatter import (
     format_top_list, format_gainers_losers, format_status,
     format_help, format_watchlist, format_alerts_list, format_error,
     format_api_error, format_usage_error, format_not_found,
-    split_long_message,
+    split_long_message, format_usd,
 )
 from .social import scanner as social_scanner
 from .social.formatter import (
@@ -52,6 +53,28 @@ CMD_DEFS = {
         "examples": ["/setthreshold bittensor 15m -15"]},
     "/status": {"args": [], "desc": "Estado del bot"},
     "/help": {"args": [], "desc": "Ayuda"},
+    "/addtoken": {"args": [("symbol", True), ("coin_id", True)], "desc": "Agregar token al portafolio",
+        "examples": ["/addtoken TAO bittensor"]},
+    "/removetoken": {"args": [("symbol", True)], "desc": "Archivar token del portafolio",
+        "examples": ["/removetoken ARIA"]},
+    "/buy": {"args": [("symbol", True), ("quantity", True), ("price_usd", True), ("fee_usd", False)],
+        "desc": "Registrar compra", "examples": ["/buy TAO 1.5 390", "/buy TAO 1.5 390 2.50"]},
+    "/sell": {"args": [("symbol", True), ("quantity", True), ("price_usd", True), ("fee_usd", False)],
+        "desc": "Registrar venta parcial", "examples": ["/sell TAO 1 420", "/sell TAO 1 420 1.50"]},
+    "/sellall": {"args": [("symbol", True), ("price_usd", True), ("fee_usd", False)],
+        "desc": "Vender posicion completa", "examples": ["/sellall ARIA 0.052", "/sellall ARIA 0.052 3"]},
+    "/position": {"args": [("symbol", True)], "desc": "Detalle de posicion",
+        "examples": ["/position TAO"]},
+    "/transactions": {"args": [("symbol", True)], "desc": "Historial de operaciones",
+        "examples": ["/transactions TAO"]},
+    "/cash": {"args": [], "desc": "Efectivo disponible"},
+    "/setcash": {"args": [("amount_usd", True)], "desc": "Definir efectivo",
+        "examples": ["/setcash 1500"]},
+    "/deposit": {"args": [("amount_usd", True), ("note", False)], "desc": "Agregar efectivo",
+        "examples": ["/deposit 1000 capital inicial"]},
+    "/withdraw": {"args": [("amount_usd", True), ("note", False)], "desc": "Retirar efectivo",
+        "examples": ["/withdraw 300 retiro parcial"]},
+    "/portfolioedit": {"args": [], "desc": "Menu de edicion del portafolio"},
 }
 
 BOT_COMMANDS = [
@@ -69,6 +92,16 @@ BOT_COMMANDS = [
     {"command": "setentry", "description": "Precio de entrada"},
     {"command": "setqty", "description": "Cantidad del token"},
     {"command": "settotal", "description": "Total invertido"},
+    {"command": "buy", "description": "Registrar compra"},
+    {"command": "sell", "description": "Registrar venta parcial"},
+    {"command": "sellall", "description": "Vender posicion completa"},
+    {"command": "position", "description": "Detalle de posicion"},
+    {"command": "transactions", "description": "Historial de operaciones"},
+    {"command": "addtoken", "description": "Agregar token al portafolio"},
+    {"command": "removetoken", "description": "Archivar token del portafolio"},
+    {"command": "cash", "description": "Efectivo disponible"},
+    {"command": "deposit", "description": "Agregar efectivo"},
+    {"command": "withdraw", "description": "Retirar efectivo"},
     {"command": "status", "description": "Estado del bot"},
     {"command": "help", "description": "Ayuda"},
 ]
@@ -157,6 +190,43 @@ def _coin_detail_buttons(slug):
                  "url": f"https://x.com/search?q=%24{slug.upper()}"},
                 {"text": "\u2795 Watchlist",
                  "callback_data": f"watchlist:add:{slug}"},
+            ],
+        ]
+    }
+
+
+def _position_buttons(symbol, coin_id):
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "\u2795 Buy", "callback_data": f"pos:buy:{symbol}"},
+                {"text": "\u2796 Sell", "callback_data": f"pos:sell:{symbol}"},
+            ],
+            [
+                {"text": "\U0001f4cb Transactions", "callback_data": f"pos:tx:{symbol}"},
+                {"text": "\U0001f5d1 Archive", "callback_data": f"pos:archive:{symbol}"},
+            ],
+            [
+                {"text": "\U0001f4a1 CoinGecko",
+                 "url": f"https://www.coingecko.com/en/coins/{coin_id}"},
+            ],
+        ]
+    }
+
+
+def _portfolio_edit_buttons():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "\u2795 Buy", "callback_data": "cmd:buy"},
+                {"text": "\u2796 Sell", "callback_data": "cmd:sell"},
+            ],
+            [
+                {"text": "\U0001f4cb Transactions", "callback_data": "cmd:tx"},
+                {"text": "\U0001f4b0 Cash", "callback_data": "cmd:cash"},
+            ],
+            [
+                {"text": "\U0001f504 Refresh", "callback_data": "cmd:portafolio"},
             ],
         ]
     }
@@ -352,6 +422,31 @@ def handle_callback(cb):
         for p in parts:
             send_message(p)
             time.sleep(0.3)
+    elif cb_data == "cmd:buy":
+        send_message("Usa: /buy <symbol> <quantity> <price> [fee]\nEj: /buy TAO 1.5 390")
+    elif cb_data == "cmd:sell":
+        send_message("Usa: /sell <symbol> <quantity> <price> [fee]\nEj: /sell TAO 1 420")
+    elif cb_data == "cmd:tx":
+        syms = [p["symbol"] for p in portfolio_db.get_active_positions()]
+        if syms:
+            send_message("Usa: /transactions <symbol>\nTokens: " + ", ".join(syms))
+        else:
+            send_message("No hay tokens activos en el portafolio")
+    elif cb_data == "cmd:cash":
+        balance = portfolio_db.get_cash_balance()
+        send_message(f"\U0001f4b0 Efectivo disponible: {format_usd(balance)}")
+    elif cb_data.startswith("pos:buy:"):
+        sym = cb_data.split(":", 2)[2]
+        send_message(f"Usa: /buy {sym} <quantity> <price> [fee]\nEj: /buy {sym} 1 100")
+    elif cb_data.startswith("pos:sell:"):
+        sym = cb_data.split(":", 2)[2]
+        send_message(f"Usa: /sell {sym} <quantity> <price> [fee]\nEj: /sell {sym} 0.5 150")
+    elif cb_data.startswith("pos:tx:"):
+        sym = cb_data.split(":", 2)[2]
+        handle_command(f"/transactions {sym}")
+    elif cb_data.startswith("pos:archive:"):
+        sym = cb_data.split(":", 2)[2]
+        handle_command(f"/removetoken {sym}")
     elif cb_data.startswith("watchlist:add:"):
         slug = cb_data.split(":", 2)[2]
         settings = storage.load_settings()
@@ -519,40 +614,352 @@ def handle_command(text):
             else:
                 send_message(f"{slug} no esta en la watchlist")
 
-        elif cmd == "/setentry":
+        elif cmd == "/addtoken":
             sym = args[0].upper()
-            try:
-                price = float(args[1])
-            except ValueError:
-                send_message("El precio debe ser un numero.\nEj: /setentry TAO 350")
+            coin_id = args[1].lower()
+            pos = portfolio_db.get_position(sym)
+            if pos:
+                send_message(f"\u2705 {sym} ya existe en el portafolio")
                 return
-            pdata = storage.load_portfolio_data()
-            pdata.setdefault("entry_prices", {})[sym] = price
-            storage.save_portfolio_data(pdata)
-            send_message(f"\u2705 Entry price for {sym}: ${price:.6f}")
+            portfolio_db.add_position(coin_id, sym)
+            send_message(
+                f"\u2705 <b>{sym}</b> agregado al portafolio\n"
+                f"CoinGecko ID: {coin_id}\n"
+                f"Usa /buy {sym} <qty> <price> para registrar una compra"
+            )
 
-        elif cmd == "/setqty":
+        elif cmd == "/removetoken":
+            sym = args[0].upper()
+            pos = portfolio_db.get_position(sym)
+            if not pos:
+                send_message(f"❌ {sym} no esta en tu portafolio activo")
+                return
+            portfolio_db.archive_position(sym)
+            portfolio_db.add_transaction(sym.lower(), sym, "remove", 0, 0, 0, notes="Token archived")
+            send_message(f"\u2705 <b>{sym}</b> archivado. El historial se conserva.\nUsa /portfolioedit para ver opciones.")
+
+        elif cmd == "/buy":
             sym = args[0].upper()
             try:
                 qty = float(args[1])
-            except ValueError:
-                send_message("La cantidad debe ser un numero.\nEj: /setqty TAO 3.5")
+                price = float(args[2])
+            except (ValueError, IndexError):
+                send_message("❌ Cantidad y precio deben ser numeros.\nEj: /buy TAO 1.5 390")
                 return
-            pdata = storage.load_portfolio_data()
-            pdata.setdefault("quantities", {})[sym] = qty
-            storage.save_portfolio_data(pdata)
-            send_message(f"\u2705 Quantity for {sym}: {qty}")
+            if qty <= 0 or price <= 0:
+                send_message("❌ Cantidad y precio deben ser positivos")
+                return
+            fee = float(args[3]) if len(args) > 3 else 0
+            send_processing()
 
-        elif cmd == "/settotal":
+            pos = portfolio_db.get_position(sym)
+            if not pos:
+                coin_data = search_coins(sym)
+                if coin_data:
+                    coin_id = coin_data[0]["id"]
+                    pos = portfolio_db.add_position(coin_id, sym, coin_data[0].get("name", ""))
+                else:
+                    send_message(f"❌ {sym} no encontrado. Usa /addtoken {sym} <coin_id> primero")
+                    return
+
+            total_cost = qty * price + fee
+            updated = portfolio_db.update_position_after_buy(sym, qty, price, fee)
+            portfolio_db.add_transaction(
+                updated["coin_id"], sym, "buy", qty, price, total_cost,
+                fee_usd=fee, notes=""
+            )
+            portfolio_db.add_cash_movement("buy", -total_cost, f"Compra {qty} {sym} @ ${price}")
+
+            msg = (
+                f"\u2705 <b>Compra registrada</b>\n\n"
+                f"Token: {sym} — {updated.get('name', '')}\n"
+                f"Cantidad comprada: {qty:.4f} {sym}\n"
+                f"Precio: {format_usd(price)}\n"
+                f"Fee: {format_usd(fee)}\n"
+                f"Costo total: {format_usd(total_cost)}\n\n"
+                f"Nueva cantidad: {updated['quantity']:.4f} {sym}\n"
+                f"Nuevo precio promedio: {format_usd(updated['avg_entry_price'])}\n"
+                f"Nuevo cost basis: {format_usd(updated['cost_basis_usd'])}"
+            )
+            send_message(msg)
+
+        elif cmd == "/sell":
+            sym = args[0].upper()
             try:
-                total = float(args[0])
-            except ValueError:
-                send_message("El monto debe ser un numero.\nEj: /settotal 10000")
+                qty = float(args[1])
+                price = float(args[2])
+            except (ValueError, IndexError):
+                send_message("❌ Cantidad y precio deben ser numeros.\nEj: /sell TAO 1 420")
                 return
-            pdata = storage.load_portfolio_data()
-            pdata["total_invested"] = total
-            storage.save_portfolio_data(pdata)
-            send_message(f"\u2705 Total invertido: ${total:,.2f}")
+            if qty <= 0 or price <= 0:
+                send_message("❌ Cantidad y precio deben ser positivos")
+                return
+            fee = float(args[3]) if len(args) > 3 else 0
+            send_processing()
+
+            pos = portfolio_db.get_position(sym)
+            if not pos:
+                send_message(f"❌ {sym} no esta en tu portafolio.\nUsa /buy {sym} <qty> <price> para comprar primero")
+                return
+            if qty > pos["quantity"]:
+                send_message(
+                    f"❌ No puedes vender mas de lo que tienes.\n\n"
+                    f"{sym} disponible: {pos['quantity']:.4f}\n"
+                    f"Intentaste vender: {qty:.4f}"
+                )
+                return
+
+            result = portfolio_db.update_position_after_sell(sym, qty, price, fee)
+            if result is None:
+                send_message("❌ Error al procesar la venta")
+                return
+            updated, realized_pnl, proceeds = result
+            total_val = qty * price
+            portfolio_db.add_transaction(
+                updated["coin_id"], sym, "sell", qty, price, total_val,
+                fee_usd=fee, realized_pnl_usd=realized_pnl, notes=""
+            )
+            portfolio_db.add_cash_movement("sell", proceeds - fee, f"Venta {qty} {sym} @ ${price}")
+
+            pnl_emoji = "\U0001f7e2" if realized_pnl >= 0 else "\U0001f534"
+            msg = (
+                f"\u2705 <b>Venta registrada</b>\n\n"
+                f"Token: {sym} — {updated.get('name', '')}\n"
+                f"Cantidad vendida: {qty:.4f} {sym}\n"
+                f"Precio venta: {format_usd(price)}\n"
+                f"Fee: {format_usd(fee)}\n"
+                f"Valor venta: {format_usd(total_val)}\n\n"
+                f"P&L realizado: {pnl_emoji} {format_usd(realized_pnl)}\n"
+                f"Cantidad restante: {updated['quantity']:.4f} {sym}\n"
+                f"Cost basis restante: {format_usd(updated['cost_basis_usd'])}"
+            )
+            send_message(msg)
+
+        elif cmd == "/sellall":
+            sym = args[0].upper()
+            try:
+                price = float(args[1])
+            except (ValueError, IndexError):
+                send_message("❌ Precio debe ser un numero.\nEj: /sellall ARIA 0.052")
+                return
+            if price <= 0:
+                send_message("❌ El precio debe ser positivo")
+                return
+            fee = float(args[2]) if len(args) > 2 else 0
+            send_processing()
+
+            pos = portfolio_db.get_position(sym)
+            if not pos:
+                send_message(f"❌ {sym} no esta en tu portafolio")
+                return
+
+            qty = pos["quantity"]
+            result = portfolio_db.update_position_after_sell(sym, qty, price, fee)
+            if result is None:
+                send_message("❌ Error al procesar la venta total")
+                return
+            updated, realized_pnl, proceeds = result
+            total_val = qty * price
+            portfolio_db.add_transaction(
+                updated["coin_id"], sym, "sell_all", qty, price, total_val,
+                fee_usd=fee, realized_pnl_usd=realized_pnl, notes="Venta total"
+            )
+            portfolio_db.add_cash_movement("sell", proceeds - fee, f"Venta total {qty} {sym} @ ${price}")
+
+            pnl_emoji = "\U0001f7e2" if realized_pnl >= 0 else "\U0001f534"
+            msg = (
+                f"\u2705 <b>Venta total registrada</b>\n\n"
+                f"Token: {sym} — {updated.get('name', '')}\n"
+                f"Cantidad vendida: {qty:.4f} {sym}\n"
+                f"Precio venta: {format_usd(price)}\n"
+                f"Fee: {format_usd(fee)}\n"
+                f"Valor venta: {format_usd(total_val)}\n\n"
+                f"P&L realizado: {pnl_emoji} {format_usd(realized_pnl)}\n"
+                f"{sym} fue archivado del portafolio activo."
+            )
+            send_message(msg)
+
+        elif cmd == "/position":
+            sym = args[0].upper()
+            send_processing()
+            pos = portfolio_db.get_position(sym)
+            if not pos:
+                send_message(f"❌ {sym} no esta en tu portafolio activo")
+                return
+
+            from .coingecko_client import fetch_market_coins_by_ids
+            prices = {}
+            try:
+                market_data = fetch_market_coins_by_ids([pos["coin_id"]], changes="1h,24h,7d")
+                if market_data:
+                    prices = market_data[0]
+            except Exception:
+                pass
+
+            current_price = prices.get("current_price") if prices else None
+            ch1h = prices.get("price_change_percentage_1h_in_currency") if prices else None
+            ch24h = prices.get("price_change_percentage_24h") if prices else None
+            ch7d = prices.get("price_change_percentage_7d_in_currency") if prices else None
+            mcap = prices.get("market_cap") if prices else None
+            vol24h = prices.get("total_volume") if prices else None
+
+            current_value = pos["quantity"] * current_price if current_price and pos["quantity"] > 0 else 0
+            unrealized_pnl = (current_price - pos["avg_entry_price"]) * pos["quantity"] if current_price and pos["avg_entry_price"] > 0 and pos["quantity"] > 0 else None
+            unrealized_pnl_pct = ((current_price - pos["avg_entry_price"]) / pos["avg_entry_price"]) * 100 if current_price and pos["avg_entry_price"] > 0 else None
+
+            lines = [
+                f"\U0001f4ca <b>{sym} — {pos.get('name', '')}</b>\n",
+                f"Cantidad: {pos['quantity']:.4f} {sym}",
+                f"Precio promedio: {format_usd(pos['avg_entry_price'])}",
+                f"Cost basis: {format_usd(pos['cost_basis_usd'])}",
+                f"P&L realizado: {format_usd(pos['realized_pnl_usd'])}",
+                "",
+            ]
+            if current_price is not None:
+                lines.append(f"Precio actual: {format_usd(current_price)}")
+                lines.append(f"Valor actual: {format_usd(current_value)}")
+                if unrealized_pnl is not None:
+                    e = "\U0001f7e2" if unrealized_pnl >= 0 else "\U0001f534"
+                    lines.append(f"P&L no realizado: {e} {format_usd(unrealized_pnl)} ({unrealized_pnl_pct:+.2f}%)" if unrealized_pnl_pct is not None else f"P&L no realizado: {e} {format_usd(unrealized_pnl)}")
+            if ch1h is not None:
+                e = "\U0001f7e2" if ch1h >= 0 else "\U0001f534"
+                lines.append(f"1h: {e} {ch1h:+.2f}%")
+            if ch24h is not None:
+                e = "\U0001f7e2" if ch24h >= 0 else "\U0001f534"
+                lines.append(f"24h: {e} {ch24h:+.2f}%")
+            if ch7d is not None:
+                e = "\U0001f7e2" if ch7d >= 0 else "\U0001f534"
+                lines.append(f"7d: {e} {ch7d:+.2f}%")
+            if mcap:
+                lines.append(f"Market Cap: {format_usd(mcap)}")
+            if vol24h:
+                lines.append(f"Volume 24h: {format_usd(vol24h)}")
+
+            lines.append("")
+            txs = portfolio_db.get_transactions(sym, limit=5)
+            if txs:
+                lines.append(f"<b>Ultimas transacciones:</b>")
+                for t in txs:
+                    ttype = t["type"].replace("_", " ").title()
+                    lines.append(f"  \u2022 {ttype} {t['quantity']:.4f} @ {format_usd(t['price_usd'])}")
+            else:
+                lines.append("Sin transacciones registradas.")
+
+            msg = "\n".join(lines)
+            buttons = _position_buttons(sym, pos["coin_id"])
+            send_message(msg, buttons=buttons)
+
+        elif cmd == "/transactions":
+            sym = args[0].upper()
+            txs = portfolio_db.get_transactions(sym, limit=25)
+            if not txs:
+                send_message(f"Sin transacciones registradas para {sym}")
+                return
+
+            lines = [f"\U0001f4cb <b>Transacciones: {sym}</b>\n"]
+            for t in txs:
+                ttype = t["type"].replace("_", " ").title()
+                ts = t.get("created_at", "")[:19]
+                pnl_str = ""
+                if t.get("realized_pnl_usd"):
+                    e = "\U0001f7e2" if t["realized_pnl_usd"] >= 0 else "\U0001f534"
+                    pnl_str = f" | P&L: {e} {format_usd(t['realized_pnl_usd'])}"
+                lines.append(
+                    f"\u2022 <b>{ttype}</b> {ts}\n"
+                    f"   {t['quantity']:.4f} @ {format_usd(t['price_usd'])}"
+                    f"{pnl_str}"
+                )
+                if t.get("notes"):
+                    lines.append(f"   Nota: {t['notes']}")
+                lines.append("")
+            send_message("\n".join(lines))
+
+        elif cmd == "/cash":
+            balance = portfolio_db.get_cash_balance()
+            total_positions_value = 0
+            total_cost_basis = 0
+            total_realized_pnl = 0
+            active_positions = portfolio_db.get_active_positions()
+            slugs = [p["coin_id"] for p in active_positions]
+            prices = {}
+            if slugs:
+                try:
+                    from .coingecko_client import fetch_market_coins_by_ids
+                    market_data = fetch_market_coins_by_ids(slugs, changes="")
+                    if market_data:
+                        prices = {c["id"]: c.get("current_price", 0) or 0 for c in market_data}
+                except Exception:
+                    pass
+            for p in active_positions:
+                cost_basis = p["cost_basis_usd"] or 0
+                total_cost_basis += cost_basis
+                current_price = prices.get(p["coin_id"], 0)
+                current_value = p["quantity"] * current_price if current_price else 0
+                total_positions_value += current_value
+                total_realized_pnl += p.get("realized_pnl_usd", 0) or 0
+
+            total_value = total_positions_value + balance
+            unrealized_pnl = total_positions_value - total_cost_basis if total_cost_basis > 0 else 0
+            total_pnl = unrealized_pnl + total_realized_pnl
+
+            msg = (
+                f"\U0001f4b0 <b>Resumen de Efectivo</b>\n\n"
+                f"Efectivo disponible: {format_usd(balance)}\n"
+                f"Valor en posiciones: {format_usd(total_positions_value)}\n"
+                f"Valor total: {format_usd(total_value)}\n"
+                f"Cost basis total: {format_usd(total_cost_basis)}\n"
+                f"P&L no realizado: {format_usd(unrealized_pnl)}\n"
+                f"P&L realizado: {format_usd(total_realized_pnl)}\n"
+                f"P&L total: {format_usd(total_pnl)}"
+            )
+            send_message(msg)
+
+        elif cmd == "/setcash":
+            try:
+                amount = float(args[0])
+            except ValueError:
+                send_message("❌ El monto debe ser un numero.\nEj: /setcash 1500")
+                return
+            portfolio_db.set_cash_balance(amount)
+            send_message(f"\u2705 Efectivo definido en {format_usd(amount)}")
+
+        elif cmd == "/deposit":
+            try:
+                amount = float(args[0])
+            except ValueError:
+                send_message("❌ El monto debe ser un numero.\nEj: /deposit 1000")
+                return
+            note = " ".join(args[1:]) if len(args) > 1 else ""
+            portfolio_db.add_cash_movement("deposit", amount, note)
+            send_message(f"\u2705 Deposito: {format_usd(amount)}\nNuevo saldo: {format_usd(portfolio_db.get_cash_balance())}")
+
+        elif cmd == "/withdraw":
+            try:
+                amount = float(args[0])
+            except ValueError:
+                send_message("❌ El monto debe ser un numero.\nEj: /withdraw 300")
+                return
+            current = portfolio_db.get_cash_balance()
+            if amount > current:
+                send_message(f"❌ No tienes suficiente efectivo.\nDisponible: {format_usd(current)}\nIntentaste retirar: {format_usd(amount)}")
+                return
+            note = " ".join(args[1:]) if len(args) > 1 else ""
+            portfolio_db.add_cash_movement("withdraw", -amount, note)
+            send_message(f"\u2705 Retiro: {format_usd(amount)}\nNuevo saldo: {format_usd(portfolio_db.get_cash_balance())}")
+
+        elif cmd == "/portfolioedit":
+            buttons = _portfolio_edit_buttons()
+            msg = (
+                "\u2699\ufe0f <b>Editar Portafolio</b>\n\n"
+                "Selecciona una accion:\n\n"
+                "\u2022 /buy <sym> <qty> <price> — Comprar\n"
+                "\u2022 /sell <sym> <qty> <price> — Vender\n"
+                "\u2022 /addtoken <sym> <coin_id> — Agregar token\n"
+                "\u2022 /removetoken <sym> — Archivar token\n"
+                "\u2022 /deposit <amount> — Depositar efectivo\n"
+                "\u2022 /withdraw <amount> — Retirar efectivo"
+            )
+            send_message(msg, buttons=buttons)
 
         elif cmd == "/setthreshold":
             slug = args[0].lower()

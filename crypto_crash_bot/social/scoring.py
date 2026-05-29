@@ -112,6 +112,33 @@ def calculate_score(data):
     return max(0, min(100, base_score))
 
 
+def calculate_volume_score(volume_24h, liquidity):
+    if volume_24h is None or volume_24h <= 0:
+        return 0
+    vol = float(volume_24h)
+    liq = float(liquidity) if liquidity and liquidity > 0 else 0
+    base = 0
+    if vol >= 1_000_000:
+        base += 4
+    elif vol >= 100_000:
+        base += 2
+    elif vol >= 10_000:
+        base += 1
+    if liq > 0:
+        ratio = vol / liq
+        if ratio >= 2:
+            base += 3
+        elif ratio >= 1:
+            base += 2
+        elif ratio >= 0.5:
+            base += 1
+        if liq >= 500_000:
+            base += 2
+        elif liq >= 100_000:
+            base += 1
+    return min(base, 10)
+
+
 def classify(score, price_change_1h, price_change_24h, risk_flags):
     if risk_flags:
         return "risk"

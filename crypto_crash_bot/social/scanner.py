@@ -54,6 +54,16 @@ def run_scan():
         else:
             entry["dex_data"] = {}
 
+        vol_real = entry.get("volume_24h")
+        liq_real = entry.get("liquidity")
+        volume_score = scoring.calculate_volume_score(vol_real, liq_real)
+
+        logger.info(
+            f"HYPE_DEBUG token={slug} source={'dexscreener' if entry.get('dex_data') else 'coingecko'} "
+            f"volume_h24={vol_real} liquidity={liq_real} "
+            f"volume_score={volume_score} social_score={score}"
+        )
+
         score = scoring.calculate_score(entry)
         category = scoring.classify(
             score, entry.get("price_change_1h"),
@@ -66,15 +76,17 @@ def run_scan():
             "symbol": symbol,
             "name": name,
             "score": score,
+            "volume_score": volume_score,
             "category": category,
             "narrative": ", ".join(narratives) if narratives else "General",
             "source": "coingecko_trending",
             "price": entry.get("price"),
             "price_change_1h": entry.get("price_change_1h"),
             "price_change_24h": entry.get("price_change_24h"),
-            "volume_24h": entry.get("volume_24h"),
+            "volume_24h": vol_real,
+            "volume_1h": (entry.get("dex_data") or {}).get("volume_1h"),
             "volume_change_24h": None,
-            "liquidity": entry.get("liquidity"),
+            "liquidity": liq_real,
             "fdv": entry.get("fdv"),
             "chain": entry.get("chain"),
             "pair_address": entry.get("pair_address"),

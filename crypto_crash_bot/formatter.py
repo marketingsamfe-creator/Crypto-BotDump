@@ -23,6 +23,20 @@ def _fmt_change(val, suffix="%", always_sign=True):
     return f"{val:.2f}{suffix}"
 
 
+def format_usd(value):
+    if value is None:
+        return "N/A"
+    if not isinstance(value, (int, float)):
+        return "N/A"
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    if value >= 1_000:
+        return f"${value / 1_000:.2f}K"
+    return f"${value:,.2f}"
+
+
 def _fmt_pnl(val):
     if val is None:
         return "N/A"
@@ -131,15 +145,28 @@ def format_portfolio_report(result):
     ]
 
     if result["total_value"] > 0:
-        lines.append(f"💰 <b>Total Value:</b> {_fmt_price(result['total_value'])}")
-    if result["total_invested"] > 0:
-        lines.append(f"💸 <b>Invested:</b> {_fmt_price(result['total_invested'])}")
+        lines.append(f"💰 <b>Positions Value:</b> {format_usd(result['total_value'])}")
+    cash = result.get("cash_balance", 0)
+    lines.append(f"💵 <b>Cash:</b> {format_usd(cash)}")
+    lines.append(f"💎 <b>Total Value:</b> {format_usd(result.get('total_value_with_cash', result['total_value'] + cash))}")
 
+    if result["total_invested"] > 0:
+        lines.append(f"💸 <b>Cost Basis:</b> {format_usd(result['total_invested'])}")
+
+    unrealized = result.get("unrealized_pnl", 0)
+    realized = result.get("realized_pnl", 0)
     total_pnl_usd = result["total_pnl_usd"]
+
+    if unrealized != 0:
+        e = "📈" if unrealized > 0 else "📉"
+        lines.append(f"{e} <b>Unrealized P&L:</b> {_fmt_pnl(unrealized)}")
+    if realized != 0:
+        e = "📈" if realized > 0 else "📉"
+        lines.append(f"{e} <b>Realized P&L:</b> {_fmt_pnl(realized)}")
     if total_pnl_usd != 0:
         pnl_emoji = "📈" if total_pnl_usd > 0 else "📉"
         lines.append(
-            f"{pnl_emoji} <b>P&L:</b> {_fmt_pnl(total_pnl_usd)} "
+            f"{pnl_emoji} <b>Total P&L:</b> {_fmt_pnl(total_pnl_usd)} "
             f"({_fmt_change(result['total_pnl_pct'])})"
         )
 
@@ -155,7 +182,7 @@ def format_portfolio_report(result):
         lines.append(
             f"{e} <b>{token['symbol']} — {token['name']}</b>"
         )
-        changes_line = f"   Price: {_fmt_price(token['price'])}"
+        changes_line = f"   Price: {format_usd(token['price'])}"
         if token.get("change_1h") is not None:
             changes_line += f" | 1h: {_fmt_change(token['change_1h'])}"
         if token.get("change_24h") is not None:
@@ -167,11 +194,12 @@ def format_portfolio_report(result):
         if token["quantity"] and token["quantity"] > 0:
             lines.append(
                 f"   Position: {token['quantity']:.4f} {token['symbol']} "
-                f"= {_fmt_price(token['position_value'])}"
+                f"= {format_usd(token['position_value'])}"
             )
 
         if token["entry_price"] and token["entry_price"] > 0:
-            lines.append(f"   Entry: {_fmt_price(token['entry_price'])}")
+            lines.append(f"   Entry: {format_usd(token['entry_price'])}")
+            lines.append(f"   Cost Basis: {format_usd(token.get('cost_basis', 0))}")
 
         if token["pnl_pct"] is not None:
             emoji_pnl = "🟢" if token["pnl_pct"] >= 0 else "🔴"
@@ -179,6 +207,11 @@ def format_portfolio_report(result):
             if token["pnl_usd"] is not None:
                 pnl_str += f" ({_fmt_pnl(token['pnl_usd'])})"
             lines.append(pnl_str)
+
+        rp = token.get("realized_pnl", 0)
+        if rp:
+            e = "🟢" if rp >= 0 else "🔴"
+            lines.append(f"   Realized P&L: {e} {_fmt_pnl(rp)}")
 
         lines.append(f"   Allocation: {token['allocation']}%")
         lines.append("")
@@ -322,10 +355,18 @@ def format_help():
         "━━━━━━━━━━━━━━\n"
         "<b>Portafolio</b>\n"
         "• /portafolio — Resumen completo del portafolio\n"
-        "• /setentry &lt;SIMB&gt; &lt;precio&gt; — Precio de entrada\n"
-        "• /setqty &lt;SIMB&gt; &lt;cantidad&gt; — Cantidad del token\n"
-        "• /settotal &lt;usd&gt; — Total invertido\n\n"
-        "<b>Búsqueda</b>\n"
+        "• /buy &lt;sym&gt; &lt;qty&gt; &lt;price&gt; [fee] — Comprar\n"
+        "• /sell &lt;sym&gt; &lt;qty&gt; &lt;price&gt; [fee] — Vender parcial\n"
+        "• /sellall &lt;sym&gt; &lt;price&gt; [fee] — Vender todo\n"
+        "• /position &lt;sym&gt; — Detalle de posicion\n"
+        "• /transactions &lt;sym&gt; — Historial de operaciones\n"
+        "• /addtoken &lt;sym&gt; &lt;coin_id&gt; — Agregar token\n"
+        "• /removetoken &lt;sym&gt; — Archivar token\n"
+        "• /cash — Efectivo disponible\n"
+        "• /deposit &lt;amount&gt; [note] — Depositar efectivo\n"
+        "• /withdraw &lt;amount&gt; [note] — Retirar efectivo\n"
+        "• /portfolioedit — Menu de edicion\n\n"
+        "<b>Busqueda</b>\n"
         "• /precio &lt;coin&gt; — Precio, cambios 1h/24h/7d\n"
         "• /search &lt;texto&gt; — Buscar token por nombre\n\n"
         "<b>Mercado</b>\n"
@@ -333,14 +374,14 @@ def format_help():
         "• /gainers — Top 10 ganadores 24h\n"
         "• /losers — Top 10 perdedores 24h\n\n"
         "<b>Alertas</b>\n"
-        "• /alerts — Últimas alertas registradas\n"
+        "• /alerts — Ultimas alertas registradas\n"
         "• /watchlist — Tokens bajo vigilancia\n"
         "• /addwatch &lt;coin_id&gt; — Agregar a watchlist\n"
         "• /removewatch &lt;coin_id&gt; — Quitar de watchlist\n\n"
         "<b>Tendencias</b>\n"
         "• /trends — Top oportunidades por Opportunity Score\n"
-        "• /early — Señales tempranas (High Priority / Early Signal)\n"
-        "• /hype — Tokens con ruido pero sin volumen\n\n"
+        "• /early — Senales tempranas\n"
+        "• /hype — Tokens con ruido sin volumen\n\n"
         "<b>Sistema</b>\n"
         "• /status — Estado del bot\n"
         "• /help — Esta ayuda"

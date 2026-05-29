@@ -25,6 +25,7 @@ def init_db():
             symbol TEXT,
             name TEXT,
             score INTEGER,
+            volume_score INTEGER DEFAULT 0,
             category TEXT,
             narrative TEXT,
             source TEXT,
@@ -32,6 +33,7 @@ def init_db():
             price_change_1h REAL,
             price_change_24h REAL,
             volume_24h REAL,
+            volume_1h REAL,
             volume_change_24h REAL,
             liquidity REAL,
             fdv REAL,
@@ -64,19 +66,19 @@ def save_trend_scores(scores):
     for s in scores:
         conn.execute("""
             INSERT INTO trend_scores
-                (slug, symbol, name, score, category, narrative, source,
+                (slug, symbol, name, score, volume_score, category, narrative, source,
                  price, price_change_1h, price_change_24h,
-                 volume_24h, volume_change_24h, liquidity, fdv,
+                 volume_24h, volume_1h, volume_change_24h, liquidity, fdv,
                  chain, pair_address, dex_url, gecko_score,
                  risk_flags, raw_data)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             s.get("slug"), s.get("symbol"), s.get("name"),
-            s.get("score"), s.get("category"), s.get("narrative"),
-            s.get("source"), s.get("price"),
+            s.get("score"), s.get("volume_score", 0), s.get("category"),
+            s.get("narrative"), s.get("source"), s.get("price"),
             s.get("price_change_1h"), s.get("price_change_24h"),
-            s.get("volume_24h"), s.get("volume_change_24h"),
-            s.get("liquidity"), s.get("fdv"),
+            s.get("volume_24h"), s.get("volume_1h"),
+            s.get("volume_change_24h"), s.get("liquidity"), s.get("fdv"),
             s.get("chain"), s.get("pair_address"),
             s.get("dex_url"), s.get("gecko_score"),
             json.dumps(s.get("risk_flags", [])),

@@ -146,6 +146,39 @@ def format_early_list(results):
     return split_long_message("\n".join(lines))
 
 
+def format_usd(value):
+    if value is None:
+        return "N/A"
+    if not isinstance(value, (int, float)):
+        return "N/A"
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    if value >= 1_000:
+        return f"${value / 1_000:.2f}K"
+    return f"${value:,.2f}"
+
+
+def _build_hype_reason(r):
+    score = r.get("score", 0) or 0
+    vol = r.get("volume_24h")
+    liq = r.get("liquidity")
+    vol_score = r.get("volume_score")
+    reasons = []
+    if score >= 60:
+        reasons.append(f"Social Score alto ({score}/100)")
+    if vol_score is not None and vol_score <= 4:
+        reasons.append(f"Volume Score bajo ({vol_score}/10)")
+    if vol is None and liq is None:
+        reasons.append("Sin datos de volumen real")
+    if liq is not None and liq < 100_000:
+        reasons.append("Liquidez muy baja")
+    if vol is not None and liq is not None and liq > 0 and (vol / liq) < 0.5:
+        reasons.append("Volumen bajo relativo a liquidez")
+    return "; ".join(reasons) if reasons else "Ruido social sin confirmacion de mercado"
+
+
 def format_hype_list(results):
     if not results:
         return "\u26aa <b>Hype Warning</b>\n\nNo hay tokens con ruido excesivo sin volumen."
@@ -155,19 +188,44 @@ def format_hype_list(results):
         f"\u26a0\ufe0f <b>Hype Without Volume</b>",
         f"\U0001f552 {now}",
         "",
-        "Estos tokens tienen atenci\u00f3n pero baja liquidez o volumen.",
-        "Posible manipulaci\u00f3n. Investigar con precauci\u00f3n.\n",
+        "Tokens con alta atencion social pero bajo volumen o liquidez.\n",
     ]
 
-    for i, r in enumerate(results[:10], 1):
+    for i, r in enumerate(results[:8], 1):
         symbol = r.get("symbol", "?")
-        score = r.get("score", 0)
-        liq = r.get("liquidity")
+        name = r.get("name", "")
+        score = r.get("score", 0) or 0
         vol = r.get("volume_24h")
+        liq = r.get("liquidity")
+        vol_score = r.get("volume_score")
+        ph = r.get("price_change_1h")
+        p24 = r.get("price_change_24h")
+        fdv = r.get("fdv")
+        chain = r.get("chain", "")
+        slug = r.get("slug", "")
+
         lines.append(
-            f"{i}. <b>{symbol}</b> | Score: {score}/100"
+            f"{i}. <b>{symbol}</b> — {name}"
         )
-        lines.append(f"   Liquidity: {_fmt_price(liq)} | Volume: {_fmt_price(vol)}")
+        lines.append(f"   Social Score: {score}/100")
+        if vol_score is not None:
+            lines.append(f"   Volume Score: {vol_score}/10")
+        else:
+            lines.append(f"   Volume Score: N/A")
+        lines.append(f"   Real Volume 24h: {format_usd(vol)}")
+        if ph is not None:
+            e = "\U0001f7e2" if ph >= 0 else "\U0001f534"
+            lines.append(f"   1h: {e} {ph:+.2f}%")
+        if p24 is not None:
+            e = "\U0001f7e2" if p24 >= 0 else "\U0001f534"
+            lines.append(f"   24h: {e} {p24:+.2f}%")
+        lines.append(f"   Liquidity: {format_usd(liq)}")
+        if chain:
+            lines.append(f"   Chain: {chain}")
+        if fdv:
+            lines.append(f"   FDV: {format_usd(fdv)}")
+        reason = _build_hype_reason(r)
+        lines.append(f"   \u26a0\ufe0f {reason}")
         lines.append("")
 
     lines.append("\u26a0\ufe0f No es consejo financiero.")
