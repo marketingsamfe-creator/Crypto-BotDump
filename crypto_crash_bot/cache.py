@@ -65,6 +65,7 @@ detail_cache = TTLCache("detail")
 dex_cache = TTLCache("dex")
 dumps_cache = TTLCache("dumps")
 token_resolve_cache = TTLCache("token_resolve")
+menu_cache = TTLCache("menu")
 
 
 def get_price_cache():
@@ -91,23 +92,26 @@ def get_dumps_cache():
 def get_token_resolve_cache():
     return token_resolve_cache
 
+def get_menu_cache():
+    return menu_cache
+
 def clear_all():
     for c in [price_cache, market_cache, portfolio_cache, social_cache,
-              detail_cache, dex_cache, dumps_cache, token_resolve_cache]:
+              detail_cache, dex_cache, dumps_cache, token_resolve_cache, menu_cache]:
         c.clear()
     logger.info("All caches cleared")
 
 def get_all_stats():
     return [price_cache.stats(), market_cache.stats(), portfolio_cache.stats(),
             social_cache.stats(), detail_cache.stats(), dex_cache.stats(),
-            dumps_cache.stats(), token_resolve_cache.stats()]
+            dumps_cache.stats(), token_resolve_cache.stats(), menu_cache.stats()]
 
 def get_global_hit_rate():
     total_hits = sum(c._hits for c in [price_cache, market_cache, portfolio_cache,
                                         social_cache, detail_cache, dex_cache,
-                                        dumps_cache, token_resolve_cache])
+                                        dumps_cache, token_resolve_cache, menu_cache])
     total_misses = sum(c._misses for c in [price_cache, market_cache, portfolio_cache,
                                            social_cache, detail_cache, dex_cache,
-                                           dumps_cache, token_resolve_cache])
+                                           dumps_cache, token_resolve_cache, menu_cache])
     total = total_hits + total_misses
     return round(total_hits / total * 100, 1) if total > 0 else 0

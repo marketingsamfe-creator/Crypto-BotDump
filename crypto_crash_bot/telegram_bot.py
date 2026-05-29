@@ -130,6 +130,11 @@ def _api_url(method):
     return f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/{method}"
 
 
+_last_sent_msg_id = None
+_loading_msg_id = None
+_first_response_time = None
+
+
 def send_typing():
     try:
         session.post(_api_url("sendChatAction"), json={
@@ -140,7 +145,11 @@ def send_typing():
 
 
 def send_message(text, buttons=None):
+    global _last_sent_msg_id, _first_response_time
+    if _first_response_time is None:
+        _first_response_time = time.time()
     parts = split_long_message(text) if isinstance(text, str) else text
+    last_id = None
     for part in parts:
         payload = {
             "chat_id": config.TELEGRAM_CHAT_ID,
@@ -152,13 +161,135 @@ def send_message(text, buttons=None):
         try:
             resp = session.post(_api_url("sendMessage"), json=payload, timeout=15)
             resp.raise_for_status()
+            result = resp.json()
+            if result.get("ok") and result.get("result"):
+                last_id = result["result"]["message_id"]
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
         time.sleep(0.3)
+    if last_id:
+        _last_sent_msg_id = last_id
+        return last_id
+
+
+def edit_message(text, message_id=None, buttons=None):
+    global _last_sent_msg_id, _loading_msg_id
+    mid = message_id or _last_sent_msg_id or _loading_msg_id
+    if not mid:
+        return send_message(text, buttons)
+    payload = {
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "message_id": mid,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if buttons:
+        payload["reply_markup"] = buttons
+    try:
+        resp = session.post(_api_url("editMessageText"), json=payload, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        if "message is not modified" not in str(e).lower() and "message can't be edited" not in str(e).lower():
+            logger.error(f"Telegram edit error: {e}")
+
+
+def send_loading(text):
+    global _loading_msg_id, _first_response_time
+    if _first_response_time is None:
+        _first_response_time = time.time()
+    try:
+        resp = session.post(_api_url("sendMessage"), json={
+            "chat_id": config.TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+        }, timeout=10)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("ok") and result.get("result"):
+            _loading_msg_id = result["result"]["message_id"]
+            return _loading_msg_id
+    except Exception as e:
+        logger.error(f"Telegram loading error: {e}")
 
 
 def send_processing():
     send_typing()
+
+
+# Performance metrics
+_perf_records = []
+
+
+def _perf_record(command, first_ms, total_ms, cache_hit=None, api=None):
+    r = {"cmd": command, "first_ms": round(first_ms, 1), "total_ms": round(total_ms, 1), "ts": time.time()}
+    if cache_hit is not None:
+        r["cache"] = cache_hit
+    if api:
+        r["api"] = api
+    _perf_records.append(r)
+    if len(_perf_records) > 500:
+        _perf_records[:] = _perf_records[-250:]
+    logger.info(f"PERF command={command} first_response_ms={first_ms:.0f} final_response_ms={total_ms:.0f}" +
+                (f" cache_hit={cache_hit}" if cache_hit is not None else "") +
+                (f" api={api}" if api else ""))
+
+
+def _get_perf_summary():
+    if not _perf_records:
+        return "No performance data yet."
+    recent = _perf_records[-50:]
+    first_times = [r["first_ms"] for r in recent]
+    total_times = [r["total_ms"] for r in recent]
+    avg_first = sum(first_times) / len(first_times)
+    avg_total = sum(total_times) / len(total_times)
+    sorted_total = sorted(total_times)
+    p95 = sorted_total[int(len(sorted_total) * 0.95)] if len(sorted_total) > 1 else sorted_total[-1]
+    slowest = max(recent, key=lambda r: r["total_ms"])
+    cache_records = [r for r in recent if r.get("cache") is not None]
+    cache_hits = sum(1 for r in cache_records if r["cache"] is True)
+    cache_rate = round(cache_hits / len(cache_records) * 100, 1) if cache_records else 0
+    return {
+        "avg_first_ms": round(avg_first, 1),
+        "avg_total_ms": round(avg_total, 1),
+        "p95_total_ms": round(p95, 1),
+        "cache_hit_rate": cache_rate,
+        "slowest_cmd": slowest["cmd"],
+        "slowest_ms": round(slowest["total_ms"], 1),
+        "total_recorded": len(_perf_records),
+    }
+
+
+def _refresh_button(data):
+    return {"inline_keyboard": [[{"text": "\U0001f504 Refresh", "callback_data": f"refresh:{data}"}]]}
+
+
+def _loading_texts():
+    return {
+        "/start": "\U0001f3e0 Loading menu...",
+        "/menu": "\U0001f3e0 Loading menu...",
+        "/buy": "\u2795 Buy Token...",
+        "/sell": "\u2796 Loading positions...",
+        "/dumps": "\U0001f4c9 Loading Top Losers...",
+        "/hype": "\u26a0\ufe0f Loading Hype Signals...",
+        "/trends": "\U0001f525 Loading Trends...",
+        "/early": "\U0001f7e2 Loading Early Signals...",
+        "/portafolio": "\U0001f4ca Calculating portfolio...",
+        "/precio": "\U0001f50e Looking up token...",
+        "/search": "\U0001f50e Searching...",
+        "/social": "\U0001f9e0 Loading social analysis...",
+        "/status": "\u2699\ufe0f Checking bot status...",
+        "/gainers": "\U0001f7e2 Loading gainers...",
+        "/losers": "\U0001f534 Loading losers...",
+        "/top": "\U0001f4ca Loading top coins...",
+        "/alerts": "\u26a0\ufe0f Loading alerts...",
+        "/watchlist": "\u2b50 Loading watchlist...",
+        "/perftest": "\U0001f9e0 Running performance test...",
+        "/testflows": "\U0001f9ea Testing flows...",
+    }
+
+
+def _loading_text(cmd):
+    return _loading_texts().get(cmd, f"\U0001f504 Processing {cmd}...")
 
 
 def _main_menu():
@@ -661,6 +792,30 @@ def handle_callback(cb):
             storage.save_settings(settings)
             logger.info(f"Added {slug} to watchlist via callback")
 
+    # ── REFRESH CALLBACKS ──
+    elif cb_data.startswith("refresh:"):
+        target = cb_data.split(":", 1)[1]
+        cmd_map = {
+            "dumps": "/dumps",
+            "gainers": "/gainers",
+            "losers": "/losers",
+            "top": "/top",
+            "trends": "/trends",
+            "early": "/early",
+            "hype": "/hype",
+            "portafolio": "/portafolio",
+            "portfolio": "/portafolio",
+        }
+        if target in cmd_map:
+            # Clear relevant cache
+            if target in ("dumps",):
+                cache.get_dumps_cache().clear()
+            elif target in ("gainers", "losers", "top"):
+                cache.get_market_cache().clear()
+            elif target in ("trends", "early", "hype"):
+                cache.get_social_cache().clear()
+            handle_command(cmd_map[target])
+
     try:
         session.post(_api_url("answerCallbackQuery"), json={
             "callback_query_id": cb["id"], "text": "Done",
@@ -705,6 +860,9 @@ def _flow_cancel_handler():
 
 
 def handle_command(text):
+    global _first_response_time, _loading_msg_id
+    _first_response_time = None
+    _loading_msg_id = None
     _start = time.time()
     parts = text.strip().split()
     cmd = parts[0].lower()
@@ -718,45 +876,55 @@ def handle_command(text):
 
     try:
         if cmd in ("/portafolio", "/portfolio"):
+            send_loading("\U0001f4ca <b>Calculating portfolio...</b>")
             send_portfolio_report()
 
         elif cmd in ("/menu", "/start"):
+            send_loading("\U0001f3e0 <b>Loading menu...</b>")
             show_menu()
 
         elif cmd == "/cancel":
             _flow_cancel_handler()
 
         elif cmd in ("/search", "/precio", "/buscar"):
-            send_processing()
+            mid = send_loading("\U0001f50e <b>Looking up token...</b>")
             query = " ".join(args)
+            cached_key = f"token_menu:{query.lower()}"
+            cached = cache.get_menu_cache().get(cached_key)
+            if cached:
+                edit_message(cached[0], message_id=mid, buttons=cached[1])
+                return
             resolved = trading_ui.resolve_token(query)
             if not resolved:
-                send_message(format_not_found(query))
+                edit_message(f"\u274c <b>{query}</b> no encontrado. Intenta con otro nombre o ID.", message_id=mid)
                 return
             msg = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
             btns = trading_ui.build_token_menu_buttons(resolved.get("slug", resolved.get("symbol", query).lower()), resolved.get("symbol", query.upper()))
-            send_message(msg, buttons=btns)
+            try:
+                cache.get_menu_cache().set(cached_key, (msg, btns), ttl=config.TOKEN_MENU_CACHE_TTL)
+            except Exception:
+                pass
+            edit_message(msg, message_id=mid, buttons=btns)
 
         elif cmd == "/top":
-            send_processing()
+            mid = send_loading("\U0001f4ca <b>Loading top coins...</b>")
             cached = cache.get_market_cache().get("top")
             if cached:
-                send_message(cached)
+                edit_message(cached, message_id=mid)
                 return
             coins = fetch_market_coins(page=1, per_page=10)
             if coins:
                 msg = format_top_list(coins)
                 cache.get_market_cache().set("top", msg, ttl=120)
-                send_message(msg)
+                edit_message(msg, message_id=mid)
             else:
-                send_message(format_api_error("CoinGecko"))
+                edit_message(format_api_error("CoinGecko"), message_id=mid, buttons=_refresh_button("top"))
 
         elif cmd == "/gainers":
-            send_processing()
+            mid = send_loading("\U0001f7e2 <b>Loading gainers...</b>")
             cached = cache.get_market_cache().get("gainers")
             if cached:
-                for part in cached:
-                    send_message(part)
+                edit_message("\n".join(cached) if isinstance(cached, list) else cached, message_id=mid)
                 return
             coins = fetch_market_coins(page=1, per_page=250)
             if coins:
@@ -764,17 +932,15 @@ def handle_command(text):
                 top = sorted(valid, key=lambda x: x["price_change_percentage_24h"], reverse=True)[:10]
                 parts = format_gainers_losers(top, [])
                 cache.get_market_cache().set("gainers", parts, ttl=120)
-                for part in parts:
-                    send_message(part)
+                edit_message("\n".join(parts) if isinstance(parts, list) else parts, message_id=mid)
             else:
-                send_message(format_api_error("CoinGecko"))
+                edit_message(format_api_error("CoinGecko"), message_id=mid, buttons=_refresh_button("gainers"))
 
         elif cmd == "/losers":
-            send_processing()
+            mid = send_loading("\U0001f534 <b>Loading losers...</b>")
             cached = cache.get_market_cache().get("losers")
             if cached:
-                for part in cached:
-                    send_message(part)
+                edit_message("\n".join(cached) if isinstance(cached, list) else cached, message_id=mid)
                 return
             coins = fetch_market_coins(page=1, per_page=250)
             if coins:
@@ -782,10 +948,9 @@ def handle_command(text):
                 top = sorted(valid, key=lambda x: x["price_change_percentage_24h"])[:10]
                 parts = format_gainers_losers([], top)
                 cache.get_market_cache().set("losers", parts, ttl=120)
-                for part in parts:
-                    send_message(part)
+                edit_message("\n".join(parts) if isinstance(parts, list) else parts, message_id=mid)
             else:
-                send_message(format_api_error("CoinGecko"))
+                edit_message(format_api_error("CoinGecko"), message_id=mid, buttons=_refresh_button("losers"))
 
         elif cmd == "/alerts":
             alerts = get_recent_alerts(10)
@@ -1018,20 +1183,25 @@ def handle_command(text):
 
         elif cmd == "/position":
             sym = args[0].upper()
-            send_processing()
+            mid = send_loading(f"\U0001f4ca <b>Loading {sym} position...</b>")
             pos = portfolio_db.get_position(sym)
             if not pos:
-                send_message(f"❌ {sym} no esta en tu portafolio activo")
+                edit_message(f"\u274c {sym} no esta en tu portafolio activo", message_id=mid)
                 return
 
-            from .coingecko_client import fetch_market_coins_by_ids
+            cached_price = cache.get_price_cache().get(f"price:{pos['coin_id']}")
             prices = {}
-            try:
-                market_data = fetch_market_coins_by_ids([pos["coin_id"]], changes="1h,24h,7d")
-                if market_data:
-                    prices = market_data[0]
-            except Exception:
-                pass
+            if cached_price:
+                prices = cached_price
+            else:
+                from .coingecko_client import fetch_market_coins_by_ids
+                try:
+                    market_data = fetch_market_coins_by_ids([pos["coin_id"]], changes="1h,24h,7d")
+                    if market_data:
+                        prices = market_data[0]
+                        cache.get_price_cache().set(f"price:{pos['coin_id']}", prices, ttl=config.TOKEN_PRICE_CACHE_TTL)
+                except Exception:
+                    pass
 
             current_price = prices.get("current_price") if prices else None
             ch1h = prices.get("price_change_percentage_1h_in_currency") if prices else None
@@ -1084,7 +1254,7 @@ def handle_command(text):
 
             msg = "\n".join(lines)
             buttons = _position_buttons(sym, pos["coin_id"])
-            send_message(msg, buttons=buttons)
+            edit_message(msg, message_id=mid, buttons=buttons)
 
         elif cmd == "/transactions":
             sym = args[0].upper()
@@ -1112,6 +1282,7 @@ def handle_command(text):
             send_message("\n".join(lines))
 
         elif cmd == "/cash":
+            mid = send_loading("\U0001f4b0 <b>Calculating cash summary...</b>")
             balance = portfolio_db.get_cash_balance()
             total_positions_value = 0
             total_cost_basis = 0
@@ -1149,7 +1320,7 @@ def handle_command(text):
                 f"P&L realizado: {format_usd(total_realized_pnl)}\n"
                 f"P&L total: {format_usd(total_pnl)}"
             )
-            send_message(msg)
+            edit_message(msg, message_id=mid)
 
         elif cmd == "/setcash":
             try:
@@ -1284,15 +1455,24 @@ def handle_command(text):
             send_message(f"\u2705 Threshold for {slug} ({window}): {pct}%")
 
         elif cmd == "/dumps":
-            send_processing()
+            mid = send_loading("\U0001f4c9 <b>Loading Top Losers...</b>")
             window = args[0] if args else config.DUMPS_DEFAULT_WINDOW
             if window not in config.DUMPS_WINDOWS:
-                send_message(f"Ventana invalida. Opciones: {', '.join(config.DUMPS_WINDOWS)}")
+                edit_message(f"Ventana invalida. Opciones: {', '.join(config.DUMPS_WINDOWS)}", message_id=mid)
+                return
+            cached_key = f"dumps:{window}:{config.DUMPS_LIMIT}"
+            cached = cache.get_dumps_cache().get(cached_key)
+            if cached:
+                edit_message(cached["text"], message_id=mid, buttons=cached.get("buttons"))
                 return
             coins = trading_ui.get_dumps_data(window)
+            if coins is None:
+                edit_message("\u26a0\ufe0f No se pudieron obtener datos. Intenta de nuevo.", message_id=mid, buttons=_refresh_button(f"dumps:{window}"))
+                return
             msg = trading_ui.build_dumps_text(coins, window)
             btns = trading_ui.build_dumps_buttons(coins, window)
-            send_message(msg, buttons=btns)
+            cache.get_dumps_cache().set(cached_key, {"text": msg, "buttons": btns}, ttl=config.DUMPS_CACHE_TTL)
+            edit_message(msg, message_id=mid, buttons=btns)
 
         elif cmd == "/debugtoken":
             send_processing()
@@ -1343,58 +1523,83 @@ def handle_command(text):
             _run_contract_tests()
 
         elif cmd == "/trends":
-            send_processing()
+            mid = send_loading("\U0001f525 <b>Loading Trends...</b>")
             cached = cache.get_social_cache().get("trends")
             if cached:
-                for part in cached:
-                    send_message(part)
+                text = "\n".join(cached) if isinstance(cached, list) else cached
+                edit_message(text, message_id=mid)
                 return
             results = social_scanner.get_trends(limit=15)
-            parts = format_trends_list(results)
-            cache.get_social_cache().set("trends", parts, ttl=120)
-            for i, part in enumerate(parts):
-                btns = None
-                if i == len(parts) - 1 and results:
-                    first = results[0]
-                    slug = first.get("slug", first.get("symbol", "")).lower()
-                    symbol = (first.get("symbol") or slug).upper()
-                    btns = trading_ui.build_token_menu_buttons(slug, symbol)
-                send_message(part, buttons=btns)
-                time.sleep(0.3)
-
-        elif cmd == "/early":
-            send_processing()
-            cached = cache.get_social_cache().get("early")
-            if cached:
-                for part in cached:
-                    send_message(part)
+            if not results:
+                edit_message("\u26a0\ufe0f No cached data available yet.\nI am refreshing data now. Try again shortly.", message_id=mid)
                 return
-            results = social_scanner.get_early(limit=15)
-            parts = format_early_list(results)
-            cache.get_social_cache().set("early", parts, ttl=120)
-            for i, part in enumerate(parts):
-                btns = None
-                if i == len(parts) - 1 and results:
-                    first = results[0]
-                    slug = first.get("slug", first.get("symbol", "")).lower()
-                    symbol = (first.get("symbol") or slug).upper()
-                    btns = trading_ui.build_token_menu_buttons(slug, symbol)
-                send_message(part, buttons=btns)
-                time.sleep(0.3)
-
-        elif cmd == "/hype":
-            results = social_scanner.get_hype(limit=10)
-            msg = format_hype_list(results)
+            parts = format_trends_list(results)
+            cache.get_social_cache().set("trends", parts, ttl=config.TRENDS_CACHE_TTL)
+            text = "\n".join(parts) if isinstance(parts, list) else parts
             btns = None
             if results:
                 first = results[0]
                 slug = first.get("slug", first.get("symbol", "")).lower()
                 symbol = (first.get("symbol") or slug).upper()
                 btns = trading_ui.build_token_menu_buttons(slug, symbol)
-            send_message(msg, buttons=btns)
+            if btns:
+                btns["inline_keyboard"].append([{"text": "\U0001f504 Force Refresh", "callback_data": "refresh:trends"}])
+            else:
+                btns = {"inline_keyboard": [[{"text": "\U0001f504 Force Refresh", "callback_data": "refresh:trends"}]]}
+            edit_message(text, message_id=mid, buttons=btns)
+
+        elif cmd == "/early":
+            mid = send_loading("\U0001f7e2 <b>Loading Early Signals...</b>")
+            cached = cache.get_social_cache().get("early")
+            if cached:
+                text = "\n".join(cached) if isinstance(cached, list) else cached
+                edit_message(text, message_id=mid)
+                return
+            results = social_scanner.get_early(limit=15)
+            if not results:
+                edit_message("\u26a0\ufe0f No cached data available yet.\nI am refreshing data now. Try again shortly.", message_id=mid)
+                return
+            parts = format_early_list(results)
+            cache.get_social_cache().set("early", parts, ttl=config.TRENDS_CACHE_TTL)
+            text = "\n".join(parts) if isinstance(parts, list) else parts
+            btns = None
+            if results:
+                first = results[0]
+                slug = first.get("slug", first.get("symbol", "")).lower()
+                symbol = (first.get("symbol") or slug).upper()
+                btns = trading_ui.build_token_menu_buttons(slug, symbol)
+            if btns:
+                btns["inline_keyboard"].append([{"text": "\U0001f504 Force Refresh", "callback_data": "refresh:early"}])
+            else:
+                btns = {"inline_keyboard": [[{"text": "\U0001f504 Force Refresh", "callback_data": "refresh:early"}]]}
+            edit_message(text, message_id=mid, buttons=btns)
+
+        elif cmd == "/hype":
+            mid = send_loading("\u26a0\ufe0f <b>Loading Hype Signals...</b>")
+            cached = cache.get_social_cache().get("hype")
+            if cached:
+                edit_message(cached, message_id=mid)
+                return
+            results = social_scanner.get_hype(limit=10)
+            if not results:
+                edit_message("\u26a0\ufe0f No cached data available yet.\nI am refreshing data now. Try again shortly.", message_id=mid)
+                return
+            msg = format_hype_list(results)
+            cache.get_social_cache().set("hype", msg, ttl=config.HYPE_CACHE_TTL)
+            btns = None
+            if results:
+                first = results[0]
+                slug = first.get("slug", first.get("symbol", "")).lower()
+                symbol = (first.get("symbol") or slug).upper()
+                btns = trading_ui.build_token_menu_buttons(slug, symbol)
+            if btns:
+                btns["inline_keyboard"].append([{"text": "\U0001f504 Force Refresh", "callback_data": "refresh:hype"}])
+            else:
+                btns = {"inline_keyboard": [[{"text": "\U0001f504 Force Refresh", "callback_data": "refresh:hype"}]]}
+            edit_message(msg, message_id=mid, buttons=btns)
 
         elif cmd == "/perftest":
-            send_processing()
+            mid = send_loading("\U0001f9e0 <b>Running performance test...</b>")
             slugs = ["all-oracle", "troll-face", "bonk"]
             lines = ["\U0001f9e0 <b>Performance Test</b>\n"]
             total = 0.0
@@ -1410,15 +1615,14 @@ def handle_command(text):
             s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
             if s:
                 lines.append(f"\n<b>Active session:</b> flow={s.get('flow', 'none')}, step={s.get('step', 'none')}")
-            send_message("\n".join(lines))
+            edit_message("\n".join(lines), message_id=mid)
 
         elif cmd == "/testflows":
             if not config.TEST_MODE:
                 send_message("\u26a0\ufe0f Solo disponible en TEST_MODE=true")
                 return
-            send_processing()
+            mid = send_loading("\U0001f9ea <b>Testing flows...</b>")
             msg_parts = ["\U0001f9ea <b>Flow Test</b>\n"]
-            # Test buy flow with multi-chain resolve
             from session import parse_positive_decimal
             test_vals = ["100", "50,5", "-10", "abc"]
             msg_parts.append("<b>parse_positive_decimal tests:</b>")
@@ -1435,12 +1639,27 @@ def handle_command(text):
             msg_parts.append("")
             msg_parts.append("<b>Cache stats:</b>")
             msg_parts.append(f"  Hit rate: {cache.get_global_hit_rate():.1%}")
-            send_message("\n".join(msg_parts))
+            edit_message("\n".join(msg_parts), message_id=mid)
 
         elif cmd == "/status":
+            mid = send_loading("\u2699\ufe0f <b>Checking bot status...</b>")
             stats = get_api_stats()
-            msg = format_status(stats)
-            send_message(msg)
+            perf = _get_perf_summary()
+            if isinstance(perf, dict):
+                lines = [
+                    f"<b>\u2699\ufe0f Performance:</b>",
+                    f"Avg first response: {perf['avg_first_ms']:.0f}ms" if perf['avg_first_ms'] < 1000 else f"Avg first response: {perf['avg_first_ms']/1000:.1f}s",
+                    f"Avg final response: {perf['avg_total_ms']:.0f}ms" if perf['avg_total_ms'] < 1000 else f"Avg final response: {perf['avg_total_ms']/1000:.1f}s",
+                    f"P95 final response: {perf['p95_total_ms']:.0f}ms" if perf['p95_total_ms'] < 1000 else f"P95 final response: {perf['p95_total_ms']/1000:.1f}s",
+                    f"Cache hit rate: {perf['cache_hit_rate']}%",
+                    f"Slowest command: {perf['slowest_cmd']} ({perf['slowest_ms']:.0f}ms)",
+                    f"Total commands recorded: {perf['total_recorded']}",
+                ]
+                lines.append(f"\n{stats}" if isinstance(stats, str) else "")
+                msg = "\n".join(lines)
+            else:
+                msg = f"{stats}\n\n{perf}"
+            edit_message(msg, message_id=mid)
 
         elif cmd == "/help":
             msg = format_help()
@@ -1465,10 +1684,12 @@ def handle_command(text):
         send_message(format_error(f"Error inesperado. Intenta de nuevo."))
     finally:
         _dur_ms = (time.time() - _start) * 1000
+        _first_ms = (_first_response_time - _start) * 1000 if _first_response_time else _dur_ms
         if _dur_ms > config.SLOW_COMMAND_THRESHOLD_MS:
             logger.warning(f"SLOW_COMMAND {cmd}: {_dur_ms:.0f}ms")
         if config.ENABLE_PERFORMANCE_LOGS:
-            logger.info(f"CMD {cmd}: {_dur_ms:.0f}ms")
+            logger.info(f"CMD {cmd}: first={_first_ms:.0f}ms total={_dur_ms:.0f}ms")
+        _perf_record(cmd, _first_ms, _dur_ms)
 
 
 def _cancel_button():
