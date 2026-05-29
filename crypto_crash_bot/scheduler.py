@@ -6,7 +6,7 @@ from .coingecko_client import fetch_all_market_coins, get_api_stats
 from .alerts import check_alerts, save_price_snapshots
 from .telegram_bot import (
     poll_updates, send_alert, send_portfolio_report, send_startup_msg,
-    delete_webhook, set_bot_commands,
+    delete_webhook, set_bot_commands, send_batch_hype_alerts,
 )
 from .social import scanner as social_scanner
 
@@ -70,6 +70,7 @@ def run_social_scan():
     logger.info("Running social trend scan...")
     try:
         social_scanner.run_scan()
+        send_batch_hype_alerts()
     except Exception as e:
         logger.error(f"Social scan error: {e}")
 

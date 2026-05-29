@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 import requests
 from . import config, storage, cache
 from .logger import logger
@@ -191,6 +192,54 @@ def set_bot_commands():
             logger.warning(f"setMyCommands failed: {resp.json().get('description')}")
     except Exception as e:
         logger.warning(f"setMyCommands error: {e}")
+
+
+def send_batch_hype_alerts():
+    results = social_scanner.get_hype(limit=10)
+    if not results:
+        return False
+
+    settings = storage.load_settings()
+    notified = set(settings.get("notified_hype_slugs", []))
+    new_hype = [r for r in results if r.get("slug") not in notified]
+
+    if not new_hype:
+        return False
+
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    header = (
+        f"\u26a0\ufe0f <b>Hype sin Volumen</b>\n"
+        f"\U0001f552 {now}\n\n"
+        "Tokens con atenci\u00f3n sin respaldo de liquidez/volumen:\n"
+    )
+    lines = [header]
+    for r in new_hype[:5]:
+        symbol = r.get("symbol", "?")
+        score = r.get("score", 0)
+        liq = r.get("liquidity")
+        vol = r.get("volume_24h")
+        lines.append(
+            f"\u2022 <b>{symbol}</b> | Score: {score}/100"
+        )
+        if liq:
+            lines.append(f"  Liq: ${liq:,.0f}")
+        if vol:
+            lines.append(f"  Vol: ${vol:,.0f}")
+        lines.append("")
+
+    lines.append("\u26a0\ufe0f No es consejo financiero.")
+    lines.append("\ud83d\udc49 /hype para lista completa")
+
+    msg = "\n".join(lines)
+    first_slug = new_hype[0].get("slug", "")
+    send_message(msg, buttons=_trend_buttons(first_slug))
+
+    notified.update(r.get("slug") for r in new_hype)
+    settings["notified_hype_slugs"] = list(notified)
+    storage.save_settings(settings)
+
+    logger.info(f"Batch hype alert sent: {len(new_hype)} new tokens")
+    return True
 
 
 def send_startup_msg():
