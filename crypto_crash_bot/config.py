@@ -46,6 +46,16 @@ PORTFOLIO = [
 MAX_SNAPSHOTS_PER_COIN = 300
 SNAPSHOT_CLEANUP_AGE = 90000
 
+QUICK_BUY_AMOUNTS = [int(x) for x in os.environ.get("QUICK_BUY_AMOUNTS", "50,100,250,500").split(",")]
+DEFAULT_FEE_USD = float(os.environ.get("DEFAULT_FEE_USD", "0"))
+DUMPS_DEFAULT_WINDOW = os.environ.get("DUMPS_DEFAULT_WINDOW", "1h")
+DUMPS_DEFAULT_MIN_DROP = int(os.environ.get("DUMPS_DEFAULT_MIN_DROP", "15"))
+DUMPS_MIN_VOLUME_24H_USD = float(os.environ.get("DUMPS_MIN_VOLUME_24H_USD", 500_000))
+DUMPS_MIN_LIQUIDITY_USD = float(os.environ.get("DUMPS_MIN_LIQUIDITY_USD", 100_000))
+DUMPS_MIN_MARKET_CAP_USD = float(os.environ.get("DUMPS_MIN_MARKET_CAP_USD", 1_000_000))
+DUMPS_LIMIT = int(os.environ.get("DUMPS_LIMIT", "10"))
+DUMPS_WINDOWS = ["5m", "15m", "1h", "6h", "24h"]
+
 SOCIAL_SCAN_INTERVAL = int(os.environ.get("SOCIAL_SCAN_INTERVAL_SECONDS", 600))
 MIN_OPPORTUNITY_SCORE = int(os.environ.get("MIN_OPPORTUNITY_SCORE", 70))
 RISK_MODE = os.environ.get("RISK_MODE", "balanced")

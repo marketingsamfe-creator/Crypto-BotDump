@@ -21,6 +21,7 @@ from .social import scanner as social_scanner
 from .social.formatter import (
     format_trends_list, format_early_list, format_hype_list,
 )
+from . import trading_ui
 
 session = requests.Session()
 last_update_id = 0
@@ -80,6 +81,8 @@ CMD_DEFS = {
     "/menu": {"args": [], "desc": "Menu principal"},
     "/start": {"args": [], "desc": "Iniciar el bot"},
     "/cancel": {"args": [], "desc": "Cancelar operacion actual"},
+    "/dumps": {"args": [("window", False)], "desc": "Top tokens en caida",
+        "examples": ["/dumps", "/dumps 1h"]},
 }
 
 BOT_COMMANDS = [
@@ -113,6 +116,7 @@ BOT_COMMANDS = [
     {"command": "status", "description": "Estado del bot"},
     {"command": "menu", "description": "Menu principal"},
     {"command": "cancel", "description": "Cancelar operacion"},
+    {"command": "dumps", "description": "Top tokens en caida"},
     {"command": "help", "description": "Ayuda"},
 ]
 
@@ -502,14 +506,26 @@ def handle_callback(cb):
     elif cb_data == "cmd:trends":
         results = social_scanner.get_trends(limit=10)
         parts = format_trends_list(results)
-        for p in parts:
-            send_message(p)
+        for i, p in enumerate(parts):
+            btns = None
+            if i == len(parts) - 1 and results:
+                first = results[0]
+                slug = first.get("slug", first.get("symbol", "")).lower()
+                symbol = (first.get("symbol") or slug).upper()
+                btns = trading_ui.build_token_menu_buttons(slug, symbol)
+            send_message(p, buttons=btns)
             time.sleep(0.3)
     elif cb_data == "cmd:early":
         results = social_scanner.get_early(limit=10)
         parts = format_early_list(results)
-        for p in parts:
-            send_message(p)
+        for i, p in enumerate(parts):
+            btns = None
+            if i == len(parts) - 1 and results:
+                first = results[0]
+                slug = first.get("slug", first.get("symbol", "")).lower()
+                symbol = (first.get("symbol") or slug).upper()
+                btns = trading_ui.build_token_menu_buttons(slug, symbol)
+            send_message(p, buttons=btns)
             time.sleep(0.3)
     elif cb_data == "cmd:buy":
         send_message("Usa: /buy <symbol> <quantity> <price> [fee]\nEj: /buy TAO 1.5 390")
@@ -518,7 +534,13 @@ def handle_callback(cb):
     elif cb_data == "cmd:hype":
         results = social_scanner.get_hype(limit=10)
         msg = format_hype_list(results)
-        send_message(msg)
+        btns = None
+        if results:
+            first = results[0]
+            slug = first.get("slug", first.get("symbol", "")).lower()
+            symbol = (first.get("symbol") or slug).upper()
+            btns = trading_ui.build_token_menu_buttons(slug, symbol)
+        send_message(msg, buttons=btns)
     elif cb_data == "cmd:watchlist":
         settings = storage.load_settings()
         wl = settings.get("watchlist", {})
@@ -680,6 +702,18 @@ def handle_callback(cb):
             session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_query")
             send_message("\U0001f50e <b>Buscar token</b>\n\nEscribe el nombre, simbolo o ID del token:")
 
+    elif cb_data.startswith("t:"):
+        _handle_token_callback(cb_data)
+
+    elif cb_data.startswith("tb:"):
+        _handle_buy_callback(cb_data)
+
+    elif cb_data.startswith("ts:"):
+        _handle_sell_callback(cb_data)
+
+    elif cb_data.startswith("dumps:"):
+        _handle_dumps_callback(cb_data)
+
     elif cb_data.startswith("pos:buy:"):
         sym = cb_data.split(":", 2)[2]
         send_message(f"Usa: /buy {sym} <quantity> <price> [fee]\nEj: /buy {sym} 1 100")
@@ -769,34 +803,13 @@ def handle_command(text):
         elif cmd in ("/search", "/precio", "/buscar"):
             send_processing()
             query = " ".join(args)
-            cached = cache.get_detail_cache().get(f"search:{query}")
-            if cached:
-                send_message(cached["msg"], buttons=cached.get("buttons"))
-                return
-            matches = search_coins(query)
-            if not matches:
+            resolved = trading_ui.resolve_token(query)
+            if not resolved:
                 send_message(format_not_found(query))
                 return
-            if len(matches) > 1:
-                names = "\n".join(
-                    f"  \u2022 {m['name']} ({m['symbol'].upper()})" for m in matches[:5]
-                )
-                msg = (
-                    f"<b>Multiples resultados para '{query}':</b>\n{names}\n\n"
-                    f"Se mas especifico o usa el CoinGecko ID."
-                )
-                send_message(msg)
-                return
-            coin = matches[0]
-            detail = fetch_coin_detail(coin["id"])
-            if detail:
-                msg = format_coin_detail(detail)
-                btns = _coin_detail_buttons(coin["id"])
-                cache.get_detail_cache().set(f"search:{query}",
-                    {"msg": msg, "buttons": btns}, ttl=30)
-                send_message(msg, buttons=btns)
-            else:
-                send_message(format_api_error("CoinGecko"))
+            msg = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
+            btns = trading_ui.build_token_menu_buttons(resolved.get("slug", resolved.get("symbol", query).lower()), resolved.get("symbol", query.upper()))
+            send_message(msg, buttons=btns)
 
         elif cmd == "/top":
             send_processing()
@@ -1319,6 +1332,17 @@ def handle_command(text):
             storage.save_settings(settings)
             send_message(f"\u2705 Threshold for {slug} ({window}): {pct}%")
 
+        elif cmd == "/dumps":
+            send_processing()
+            window = args[0] if args else config.DUMPS_DEFAULT_WINDOW
+            if window not in config.DUMPS_WINDOWS:
+                send_message(f"Ventana invalida. Opciones: {', '.join(config.DUMPS_WINDOWS)}")
+                return
+            coins = trading_ui.get_dumps_data(window)
+            msg = trading_ui.build_dumps_text(coins, window)
+            btns = trading_ui.build_dumps_buttons(window)
+            send_message(msg, buttons=btns)
+
         elif cmd == "/trends":
             send_processing()
             cached = cache.get_social_cache().get("trends")
@@ -1329,8 +1353,14 @@ def handle_command(text):
             results = social_scanner.get_trends(limit=15)
             parts = format_trends_list(results)
             cache.get_social_cache().set("trends", parts, ttl=120)
-            for part in parts:
-                send_message(part)
+            for i, part in enumerate(parts):
+                btns = None
+                if i == len(parts) - 1 and results:
+                    first = results[0]
+                    slug = first.get("slug", first.get("symbol", "")).lower()
+                    symbol = (first.get("symbol") or slug).upper()
+                    btns = trading_ui.build_token_menu_buttons(slug, symbol)
+                send_message(part, buttons=btns)
                 time.sleep(0.3)
 
         elif cmd == "/early":
@@ -1343,14 +1373,26 @@ def handle_command(text):
             results = social_scanner.get_early(limit=15)
             parts = format_early_list(results)
             cache.get_social_cache().set("early", parts, ttl=120)
-            for part in parts:
-                send_message(part)
+            for i, part in enumerate(parts):
+                btns = None
+                if i == len(parts) - 1 and results:
+                    first = results[0]
+                    slug = first.get("slug", first.get("symbol", "")).lower()
+                    symbol = (first.get("symbol") or slug).upper()
+                    btns = trading_ui.build_token_menu_buttons(slug, symbol)
+                send_message(part, buttons=btns)
                 time.sleep(0.3)
 
         elif cmd == "/hype":
             results = social_scanner.get_hype(limit=10)
             msg = format_hype_list(results)
-            send_message(msg)
+            btns = None
+            if results:
+                first = results[0]
+                slug = first.get("slug", first.get("symbol", "")).lower()
+                symbol = (first.get("symbol") or slug).upper()
+                btns = trading_ui.build_token_menu_buttons(slug, symbol)
+            send_message(msg, buttons=btns)
 
         elif cmd == "/status":
             stats = get_api_stats()
@@ -1967,3 +2009,463 @@ def _flow_sell_execute():
         f"Cantidad restante: {updated['quantity']:.4f} {symbol}"
     )
     send_message(msg)
+
+
+# ── Token Menu (t:*) Callbacks ──────────────────────────────────────────────
+
+def _handle_token_callback(cb_data):
+    parts = cb_data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    slug = parts[2] if len(parts) > 2 else ""
+    symbol = parts[3] if len(parts) > 3 else slug.upper()
+
+    if action == "menu":
+        resolved = trading_ui.resolve_token(slug)
+        if not resolved:
+            resolved = {"slug": slug, "symbol": symbol, "name": symbol,
+                        "source": "coingecko"}
+        msg = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
+        btns = trading_ui.build_token_menu_buttons(slug, symbol)
+        send_message(msg, buttons=btns)
+
+    elif action == "buy":
+        resolved = trading_ui.resolve_token(slug)
+        if not resolved:
+            resolved = {"slug": slug, "symbol": symbol, "name": symbol}
+        msg = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
+        btns = trading_ui.build_quick_buy_buttons(slug, symbol)
+        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "tb_buy", {
+            "slug": slug, "symbol": symbol,
+            "name": resolved.get("name", symbol),
+            "current_price": resolved.get("current_price"),
+        })
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "show_quick_buy")
+        send_message("\U0001f4b5 <b>Quick Buy</b>\n\nSelect amount or enter custom:", buttons=btns)
+
+    elif action == "sell":
+        resolved = trading_ui.resolve_token(slug)
+        if not resolved:
+            resolved = {"slug": slug, "symbol": symbol, "name": symbol}
+        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "tb_sell", {
+            "slug": slug, "symbol": symbol,
+            "name": resolved.get("name", symbol),
+            "current_price": resolved.get("current_price"),
+        })
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "show_quick_sell")
+        btns = trading_ui.build_sell_pct_buttons(slug, symbol)
+        send_message("\u2796 <b>Quick Sell</b>\n\nSelect percentage or enter custom qty:", buttons=btns)
+
+    elif action == "pos":
+        resolved = trading_ui.resolve_token(slug)
+        if not resolved:
+            resolved = {"slug": slug, "symbol": symbol, "name": symbol}
+        msg, btns = trading_ui.build_position_view(symbol, resolved)
+        if btns:
+            send_message(msg, buttons=btns)
+        else:
+            send_message(msg)
+
+    elif action == "research":
+        resolved = trading_ui.resolve_token(slug)
+        if not resolved:
+            resolved = {"slug": slug, "symbol": symbol, "name": symbol}
+        msg, btns = trading_ui.build_research_view(symbol, resolved)
+        send_message(msg, buttons=btns)
+
+    elif action == "refresh":
+        resolved = trading_ui.resolve_token(slug)
+        if not resolved:
+            send_message(f"No se pudo refrescar {symbol}.")
+            return
+        msg = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
+        btns = trading_ui.build_token_menu_buttons(slug, symbol)
+        send_message(msg, buttons=btns)
+
+
+# ── Buy Flow (tb:*) Callbacks ────────────────────────────────────────────────
+
+def _handle_buy_callback(cb_data):
+    parts = cb_data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    slug = parts[2] if len(parts) > 2 else ""
+    symbol = parts[3] if len(parts) > 3 else slug.upper()
+
+    s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not s:
+        return
+
+    if action == "qty":
+        amount_usd = float(parts[4]) if len(parts) > 4 else 0
+        price = s["data"].get("current_price")
+        if not price or price <= 0:
+            send_message("Precio actual no disponible. Edita el precio manualmente.")
+            return
+        qty = round(amount_usd / price, 6)
+        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount_usd)
+        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
+        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+        _tb_show_confirm(slug, symbol)
+
+    elif action == "custom":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_custom_amount")
+        send_message("\U0001f4b5 Enter amount in USD (e.g. 150 for $150):")
+
+    elif action == "editprice":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_price")
+        send_message("\u270f\ufe0f Enter new price in USD:")
+
+    elif action == "editamt":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_custom_amount")
+        send_message("\u270f\ufe0f Enter new amount in USD:")
+
+    elif action == "editfee":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
+        send_message("Enter fee in USD (or 0):")
+
+    elif action == "confirm":
+        _tb_execute_buy(slug, symbol)
+
+
+def _tb_show_confirm(slug, symbol):
+    d = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not d:
+        return
+    data = d["data"]
+    qty = data.get("quantity", 0)
+    price = data.get("price", 0)
+    fee = data.get("fee", config.DEFAULT_FEE_USD)
+    amount = data.get("amount_usd", qty * price)
+    total = amount + fee
+    name = data.get("name", symbol)
+
+    pos = portfolio_db.get_position(symbol)
+    new_qty = (pos["quantity"] if pos else 0) + qty
+    old_cost = pos["cost_basis_usd"] if pos else 0
+    new_avg = (old_cost + total) / new_qty if new_qty > 0 else price
+
+    msg = (
+        f"\u2705 <b>Confirm Buy</b>\n\n"
+        f"Token: {symbol} — {name}\n"
+        f"Amount: ${amount:.2f}\n"
+        f"Qty: {qty:.6f} {symbol}\n"
+        f"Price: {format_usd(price)}\n"
+        f"Fee: {format_usd(fee)}\n"
+        f"Total: {format_usd(total)}\n\n"
+        f"<b>New position estimate:</b>\n"
+        f"Total qty: {new_qty:.6f}\n"
+        f"Avg entry: {format_usd(new_avg)}\n\n"
+        f"Confirm?"
+    )
+    btns = trading_ui.build_confirm_buy_buttons(slug, symbol)
+    send_message(msg, buttons=btns)
+
+
+def _tb_execute_buy(slug, symbol):
+    s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not s:
+        return
+    data = s["data"]
+    qty = data.get("quantity", 0)
+    price = data.get("price", 0)
+    fee = data.get("fee", config.DEFAULT_FEE_USD)
+    amount = data.get("amount_usd", qty * price)
+    total = amount + fee
+    coin_id = slug
+
+    pos = portfolio_db.get_position(symbol)
+    if not pos:
+        pos = portfolio_db.add_position(coin_id, symbol, data.get("name", symbol))
+
+    updated = portfolio_db.update_position_after_buy(symbol, qty, price, fee)
+    portfolio_db.add_transaction(
+        coin_id, symbol, "buy", qty, price, total,
+        fee_usd=fee, notes="Via quick buy"
+    )
+    portfolio_db.add_cash_movement("buy", -total, f"Compra {qty:.6f} {symbol} @ {format_usd(price)}")
+
+    session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+
+    msg = (
+        f"\u2705 <b>Buy executed</b>\n\n"
+        f"Token: {symbol}\n"
+        f"Qty: {qty:.6f} {symbol}\n"
+        f"Price: {format_usd(price)}\n"
+        f"Fee: {format_usd(fee)}\n"
+        f"Total: {format_usd(total)}\n\n"
+        f"New qty: {updated['quantity']:.6f}\n"
+        f"Avg entry: {format_usd(updated['avg_entry_price'])}"
+    )
+    send_message(msg)
+    resolved = {"slug": slug, "symbol": symbol, "name": data.get("name", symbol),
+                "current_price": price}
+    msg2 = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
+    btns2 = trading_ui.build_token_menu_buttons(slug, symbol)
+    send_message(msg2, buttons=btns2)
+
+
+# ── Sell Flow (ts:*) Callbacks ───────────────────────────────────────────────
+
+def _handle_sell_callback(cb_data):
+    parts = cb_data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    slug = parts[2] if len(parts) > 2 else ""
+    symbol = parts[3] if len(parts) > 3 else slug.upper()
+
+    s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not s:
+        return
+
+    pos = portfolio_db.get_position(symbol)
+    if not pos:
+        send_message(f"No position for {symbol}.")
+        return
+
+    if action == "pct":
+        pct = float(parts[4]) if len(parts) > 4 else 0
+        qty = round(pos["quantity"] * pct / 100, 6)
+        price = s["data"].get("current_price")
+        if not price or price <= 0:
+            send_message("Current price not available. Edit manually.")
+            return
+        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
+        session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+        _ts_show_confirm(slug, symbol)
+
+    elif action == "custom":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_custom_sell_qty")
+        send_message(f"\U0001f4b5 Enter qty to sell (max: {pos['quantity']:.6f}):")
+
+    elif action == "editprice":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_price_edit")
+        send_message("\u270f\ufe0f Enter new sell price in USD:")
+
+    elif action == "editqty":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_custom_sell_qty")
+        send_message(f"\u270f\ufe0f Enter new qty (max: {pos['quantity']:.6f}):")
+
+    elif action == "editfee":
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_sell_fee_edit")
+        send_message("Enter fee in USD (or 0):")
+
+    elif action == "confirm":
+        _ts_execute_sell(slug, symbol)
+
+
+def _ts_show_confirm(slug, symbol):
+    s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not s:
+        return
+    data = s["data"]
+    qty = data.get("quantity", 0)
+    price = data.get("price", 0)
+    fee = data.get("fee", config.DEFAULT_FEE_USD)
+    name = data.get("name", symbol)
+    proceeds = qty * price
+    realized = proceeds - (portfolio_db.get_position(symbol)["avg_entry_price"] * qty) - fee
+
+    msg = (
+        f"\u2705 <b>Confirm Sell</b>\n\n"
+        f"Token: {symbol} — {name}\n"
+        f"Qty: {qty:.6f} {symbol}\n"
+        f"Price: {format_usd(price)}\n"
+        f"Fee: {format_usd(fee)}\n"
+        f"Proceeds: {format_usd(proceeds)}\n"
+        f"Est. realized P&L: {format_usd(realized)}\n\n"
+        f"Confirm?"
+    )
+    btns = trading_ui.build_confirm_sell_buttons(slug, symbol)
+    send_message(msg, buttons=btns)
+
+
+def _ts_execute_sell(slug, symbol):
+    s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not s:
+        return
+    data = s["data"]
+    qty = data.get("quantity", 0)
+    price = data.get("price", 0)
+    fee = data.get("fee", config.DEFAULT_FEE_USD)
+    coin_id = slug
+
+    result = portfolio_db.update_position_after_sell(symbol, qty, price, fee)
+    if result is None:
+        send_message("Error processing sell.")
+        return
+    updated, realized_pnl, proceeds = result
+    total_val = qty * price
+
+    portfolio_db.add_transaction(
+        coin_id, symbol, "sell", qty, price, total_val,
+        fee_usd=fee, realized_pnl_usd=realized_pnl, notes="Via quick sell"
+    )
+    portfolio_db.add_cash_movement("sell", proceeds - fee,
+                                   f"Venta {qty:.6f} {symbol} @ {format_usd(price)}")
+
+    session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+
+    pnl_emoji = "\U0001f7e2" if realized_pnl >= 0 else "\U0001f534"
+    msg = (
+        f"\u2705 <b>Sell executed</b>\n\n"
+        f"Token: {symbol}\n"
+        f"Qty sold: {qty:.6f} {symbol}\n"
+        f"Price: {format_usd(price)}\n"
+        f"Fee: {format_usd(fee)}\n"
+        f"Proceeds: {format_usd(total_val)}\n\n"
+        f"Realized P&L: {pnl_emoji} {format_usd(realized_pnl)}\n"
+        f"Remaining: {updated['quantity']:.6f} {symbol}"
+    )
+    send_message(msg)
+    resolved = {"slug": slug, "symbol": symbol, "name": data.get("name", symbol),
+                "current_price": price}
+    msg2 = trading_ui.build_token_menu_text(resolved, config.TELEGRAM_CHAT_ID)
+    btns2 = trading_ui.build_token_menu_buttons(slug, symbol)
+    send_message(msg2, buttons=btns2)
+
+
+# ── Dumps Callbacks ──────────────────────────────────────────────────────────
+
+def _handle_dumps_callback(cb_data):
+    parts = cb_data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "window":
+        window = parts[2] if len(parts) > 2 else config.DUMPS_DEFAULT_WINDOW
+        coins = trading_ui.get_dumps_data(window)
+        msg = trading_ui.build_dumps_text(coins, window)
+        btns = trading_ui.build_dumps_buttons(window)
+        send_message(msg, buttons=btns)
+
+    elif action == "refresh":
+        window = config.DUMPS_DEFAULT_WINDOW
+        coins = trading_ui.get_dumps_data(window)
+        msg = trading_ui.build_dumps_text(coins, window)
+        btns = trading_ui.build_dumps_buttons(window)
+        send_message(msg, buttons=btns)
+
+    elif action == "close":
+        send_message("Closed.")
+
+
+# ── Session text handlers for new flows ───────────────────────────────────────
+
+def _handle_new_flow_text(text):
+    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if not active:
+        return
+    flow = active.get("flow", "")
+    step = active.get("step", "")
+    data = active.get("data", {})
+
+    if flow == "tb_buy":
+        slug = data.get("slug", "")
+        symbol = data.get("symbol", "")
+        if step == "waiting_custom_amount":
+            try:
+                amount_usd = float(text.replace(",", "."))
+            except ValueError:
+                send_message("Enter a valid number (e.g. 150).")
+                return
+            if amount_usd <= 0:
+                send_message("Amount must be positive.")
+                return
+            price = data.get("current_price")
+            if not price or price <= 0:
+                send_message("Current price unavailable. Edit price first.")
+                return
+            qty = round(amount_usd / price, 6)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount_usd)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+            _tb_show_confirm(slug, symbol)
+
+        elif step == "waiting_buy_price":
+            try:
+                price = float(text.replace(",", "."))
+            except ValueError:
+                send_message("Enter a valid price.")
+                return
+            if price <= 0:
+                send_message("Price must be positive.")
+                return
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+            amount = data.get("amount_usd", 0)
+            if amount > 0:
+                qty = round(amount / price, 6)
+                session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
+            _tb_show_confirm(slug, symbol)
+
+        elif step == "waiting_buy_fee":
+            try:
+                fee = float(text.replace(",", "."))
+            except ValueError:
+                send_message("Enter a valid fee (e.g. 2.50).")
+                return
+            if fee < 0:
+                send_message("Fee cannot be negative.")
+                return
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
+            _tb_show_confirm(slug, symbol)
+
+    elif flow == "tb_sell":
+        slug = data.get("slug", "")
+        symbol = data.get("symbol", "")
+        pos = portfolio_db.get_position(symbol)
+
+        if step == "waiting_custom_sell_qty":
+            if not pos:
+                send_message(f"No position for {symbol}.")
+                return
+            try:
+                qty = float(text.replace(",", "."))
+            except ValueError:
+                send_message("Enter a valid qty.")
+                return
+            if qty <= 0 or qty > pos["quantity"]:
+                send_message(f"Qty must be between 0 and {pos['quantity']:.6f}.")
+                return
+            price = data.get("current_price")
+            if not price or price <= 0:
+                send_message("Current price not available. Edit manually.")
+                return
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+            _ts_show_confirm(slug, symbol)
+
+        elif step == "waiting_sell_price_edit":
+            try:
+                price = float(text.replace(",", "."))
+            except ValueError:
+                send_message("Enter a valid price.")
+                return
+            if price <= 0:
+                send_message("Price must be positive.")
+                return
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
+            _ts_show_confirm(slug, symbol)
+
+        elif step == "waiting_sell_fee_edit":
+            try:
+                fee = float(text.replace(",", "."))
+            except ValueError:
+                send_message("Enter a valid fee (e.g. 1.50).")
+                return
+            if fee < 0:
+                send_message("Fee cannot be negative.")
+                return
+            session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
+            _ts_show_confirm(slug, symbol)
+
+
+# Patch _handle_session_text to include new flows
+_original_handle_session_text = _handle_session_text
+
+def _patched_handle_session_text(text):
+    active = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+    if active and active.get("flow") in ("tb_buy", "tb_sell"):
+        _handle_new_flow_text(text)
+    else:
+        _original_handle_session_text(text)
+
+_handle_session_text = _patched_handle_session_text
