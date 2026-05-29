@@ -46,15 +46,16 @@ PORTFOLIO = [
 MAX_SNAPSHOTS_PER_COIN = 300
 SNAPSHOT_CLEANUP_AGE = 90000
 
-QUICK_BUY_AMOUNTS = [int(x) for x in os.environ.get("QUICK_BUY_AMOUNTS", "50,100,250,500").split(",")]
+QUICK_BUY_AMOUNTS = [int(x) for x in os.environ.get("QUICK_BUY_AMOUNTS", "10,50,100,250").split(",")]
 DEFAULT_FEE_USD = float(os.environ.get("DEFAULT_FEE_USD", "0"))
-DUMPS_DEFAULT_WINDOW = os.environ.get("DUMPS_DEFAULT_WINDOW", "1h")
-DUMPS_DEFAULT_MIN_DROP = int(os.environ.get("DUMPS_DEFAULT_MIN_DROP", "15"))
-DUMPS_MIN_VOLUME_24H_USD = float(os.environ.get("DUMPS_MIN_VOLUME_24H_USD", 500_000))
-DUMPS_MIN_LIQUIDITY_USD = float(os.environ.get("DUMPS_MIN_LIQUIDITY_USD", 100_000))
-DUMPS_MIN_MARKET_CAP_USD = float(os.environ.get("DUMPS_MIN_MARKET_CAP_USD", 1_000_000))
+DUMPS_DEFAULT_WINDOW = os.environ.get("DUMPS_DEFAULT_WINDOW", "24h")
+DUMPS_DEFAULT_MIN_DROP = int(os.environ.get("DUMPS_DEFAULT_MIN_DROP", "0"))
+DUMPS_MIN_VOLUME_24H_USD = float(os.environ.get("DUMPS_MIN_VOLUME_24H_USD", 300_000))
+DUMPS_MIN_LIQUIDITY_USD = float(os.environ.get("DUMPS_MIN_LIQUIDITY_USD", 0))
+DUMPS_MIN_MARKET_CAP_USD = float(os.environ.get("DUMPS_MIN_MARKET_CAP_USD", 0))
 DUMPS_LIMIT = int(os.environ.get("DUMPS_LIMIT", "10"))
-DUMPS_WINDOWS = ["5m", "15m", "1h", "6h", "24h"]
+DUMPS_MAX_COINS = int(os.environ.get("DUMPS_MAX_COINS", "500"))
+DUMPS_WINDOWS = ["5m", "15m", "1h", "24h", "7d"]
 
 SOCIAL_SCAN_INTERVAL = int(os.environ.get("SOCIAL_SCAN_INTERVAL_SECONDS", 600))
 MIN_OPPORTUNITY_SCORE = int(os.environ.get("MIN_OPPORTUNITY_SCORE", 70))
@@ -67,3 +68,15 @@ ENABLE_REDDIT = os.environ.get("ENABLE_REDDIT", "false").lower() == "true"
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 if not os.path.exists(DATA_DIR):
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+
+TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
+
+TOKEN_KEY_SEPARATOR = ":"
+
+# DexScreener supported chains (auto-detected from response, this is for reference)
+SUPPORTED_CHAINS = [
+    "ethereum", "solana", "base", "bsc", "arbitrum", "optimism",
+    "polygon", "avalanche", "fantom", "blast", "linea", "scroll",
+    "mantle", "zksync", "celo", "cronos", "moonbeam", "pulsechain",
+    "sui", "aptos", "tron",
+]
