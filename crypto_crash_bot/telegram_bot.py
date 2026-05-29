@@ -75,33 +75,38 @@ CMD_DEFS = {
     "/withdraw": {"args": [("amount_usd", True), ("note", False)], "desc": "Retirar efectivo",
         "examples": ["/withdraw 300 retiro parcial"]},
     "/portfolioedit": {"args": [], "desc": "Menu de edicion del portafolio"},
+    "/editposition": {"args": [("symbol", True), ("qty", True), ("price", True)],
+        "desc": "Editar cantidad y precio de un token",
+        "examples": ["/editposition TAO 4.7 362.76"]},
 }
 
 BOT_COMMANDS = [
     {"command": "portafolio", "description": "Resumen del portafolio"},
-    {"command": "precio", "description": "Precio de un token"},
-    {"command": "search", "description": "Buscar criptomoneda"},
-    {"command": "early", "description": "Señales tempranas"},
-    {"command": "trends", "description": "Tendencias sociales"},
-    {"command": "top", "description": "Top criptos"},
-    {"command": "gainers", "description": "Ganadoras 24h"},
-    {"command": "losers", "description": "Perdedoras 24h"},
-    {"command": "alerts", "description": "Alertas recientes"},
-    {"command": "watchlist", "description": "Watchlist"},
-    {"command": "addwatch", "description": "Agregar a watchlist"},
-    {"command": "setentry", "description": "Precio de entrada"},
-    {"command": "setqty", "description": "Cantidad del token"},
-    {"command": "settotal", "description": "Total invertido"},
-    {"command": "buy", "description": "Registrar compra"},
-    {"command": "sell", "description": "Registrar venta parcial"},
-    {"command": "sellall", "description": "Vender posicion completa"},
-    {"command": "position", "description": "Detalle de posicion"},
+    {"command": "buy", "description": "Comprar token"},
+    {"command": "sell", "description": "Vender token"},
+    {"command": "sellall", "description": "Vender todo un token"},
+    {"command": "position", "description": "Detalle de una posicion"},
     {"command": "transactions", "description": "Historial de operaciones"},
     {"command": "addtoken", "description": "Agregar token al portafolio"},
-    {"command": "removetoken", "description": "Archivar token del portafolio"},
+    {"command": "removetoken", "description": "Archivar token"},
     {"command": "cash", "description": "Efectivo disponible"},
     {"command": "deposit", "description": "Agregar efectivo"},
     {"command": "withdraw", "description": "Retirar efectivo"},
+    {"command": "setcash", "description": "Definir efectivo manual"},
+    {"command": "portfolioedit", "description": "Menu de edicion del portafolio"},
+    {"command": "editposition", "description": "Editar cantidad/precio de un token"},
+    {"command": "precio", "description": "Precio de un token"},
+    {"command": "search", "description": "Buscar criptomoneda"},
+    {"command": "top", "description": "Top criptos"},
+    {"command": "gainers", "description": "Ganadoras 24h"},
+    {"command": "losers", "description": "Perdedoras 24h"},
+    {"command": "trends", "description": "Tendencias sociales"},
+    {"command": "early", "description": "Senales tempranas"},
+    {"command": "hype", "description": "Ruido sin volumen"},
+    {"command": "alerts", "description": "Alertas recientes"},
+    {"command": "watchlist", "description": "Watchlist"},
+    {"command": "addwatch", "description": "Agregar a watchlist"},
+    {"command": "removewatch", "description": "Quitar de watchlist"},
     {"command": "status", "description": "Estado del bot"},
     {"command": "help", "description": "Ayuda"},
 ]
@@ -447,6 +452,22 @@ def handle_callback(cb):
     elif cb_data.startswith("pos:archive:"):
         sym = cb_data.split(":", 2)[2]
         handle_command(f"/removetoken {sym}")
+    elif cb_data.startswith("edit:"):
+        sym = cb_data.split(":", 1)[1]
+        pos = portfolio_db.get_position(sym)
+        if pos:
+            msg = (
+                f"\u2699\ufe0f <b>Editando {sym}</b>\n\n"
+                f"Actual: {pos['quantity']:.4f} @ {format_usd(pos['avg_entry_price'])}\n"
+                f"Cost basis: {format_usd(pos['cost_basis_usd'])}\n\n"
+                f"Usa:\n"
+                f"/editposition {sym} <qty> <price> — Editar cantidad y precio\n"
+                f"/buy {sym} <qty> <price> [fee] — Comprar mas\n"
+                f"/sell {sym} <qty> <price> [fee] — Vender"
+            )
+            send_message(msg)
+        else:
+            send_message(f"{sym} no encontrado en el portafolio")
     elif cb_data.startswith("watchlist:add:"):
         slug = cb_data.split(":", 2)[2]
         settings = storage.load_settings()
@@ -948,18 +969,84 @@ def handle_command(text):
             send_message(f"\u2705 Retiro: {format_usd(amount)}\nNuevo saldo: {format_usd(portfolio_db.get_cash_balance())}")
 
         elif cmd == "/portfolioedit":
-            buttons = _portfolio_edit_buttons()
-            msg = (
-                "\u2699\ufe0f <b>Editar Portafolio</b>\n\n"
-                "Selecciona una accion:\n\n"
-                "\u2022 /buy <sym> <qty> <price> — Comprar\n"
-                "\u2022 /sell <sym> <qty> <price> — Vender\n"
-                "\u2022 /addtoken <sym> <coin_id> — Agregar token\n"
-                "\u2022 /removetoken <sym> — Archivar token\n"
-                "\u2022 /deposit <amount> — Depositar efectivo\n"
-                "\u2022 /withdraw <amount> — Retirar efectivo"
+            positions = portfolio_db.get_active_positions()
+            lines = [
+                "\u2699\ufe0f <b>Editar Portafolio</b>\n",
+                "Selecciona un token para editar:\n",
+            ]
+            token_buttons = []
+            for p in positions:
+                sym = p["symbol"]
+                qty = p["quantity"]
+                entry = p["avg_entry_price"]
+                if qty > 0 and entry > 0:
+                    lines.append(
+                        f"\u2022 <b>{sym}</b> — {qty:.4f} @ {format_usd(entry)}"
+                    )
+                else:
+                    lines.append(f"\u2022 <b>{sym}</b> — Sin precio/configurar")
+                token_buttons.append(
+                    {"text": sym, "callback_data": f"edit:{sym}"}
+                )
+
+            lines.extend([
+                "",
+                "Acciones rapidas:",
+                "\u2022 /buy <sym> <qty> <price> — Comprar",
+                "\u2022 /sell <sym> <qty> <price> — Vender",
+                "\u2022 /addtoken <sym> <coin_id> — Agregar token",
+                "\u2022 /removetoken <sym> — Archivar token",
+                "\u2022 /editposition <sym> <qty> <price> — Editar cantidad/precio",
+                "\u2022 /deposit <amount> — Depositar",
+                "\u2022 /withdraw <amount> — Retirar",
+            ])
+
+            buttons = {"inline_keyboard": []}
+            row = []
+            for i, btn in enumerate(token_buttons):
+                row.append(btn)
+                if len(row) >= 3:
+                    buttons["inline_keyboard"].append(row)
+                    row = []
+            if row:
+                buttons["inline_keyboard"].append(row)
+            buttons["inline_keyboard"].append([
+                {"text": "\U0001f4b0 Cash", "callback_data": "cmd:cash"},
+                {"text": "\U0001f504 Refresh", "callback_data": "cmd:portafolio"},
+            ])
+
+            send_message("\n".join(lines), buttons=buttons)
+
+        elif cmd == "/editposition":
+            sym = args[0].upper()
+            try:
+                new_qty = float(args[1])
+                new_price = float(args[2])
+            except (ValueError, IndexError):
+                send_message("❌ Uso: /editposition <sym> <qty> <price>\nEj: /editposition TAO 4.7 362.76")
+                return
+            if new_qty < 0 or new_price < 0:
+                send_message("❌ Cantidad y precio deben ser positivos")
+                return
+            pos = portfolio_db.get_position(sym)
+            if not pos:
+                send_message(f"❌ {sym} no esta en el portafolio activo")
+                return
+            updated = portfolio_db.edit_position(sym, new_qty, new_price)
+            portfolio_db.add_transaction(
+                updated["coin_id"], sym, "manual_adjustment", new_qty, new_price,
+                new_qty * new_price,
+                notes=f"Manual adjustment: qty={new_qty}, price={new_price}"
             )
-            send_message(msg, buttons=buttons)
+            msg = (
+                f"\u2705 <b>Posicion actualizada</b>\n\n"
+                f"Token: {sym}\n"
+                f"Nueva cantidad: {new_qty:.4f}\n"
+                f"Nuevo precio promedio: {format_usd(new_price)}\n"
+                f"Nuevo cost basis: {format_usd(new_qty * new_price)}\n\n"
+                "\u26a0\ufe0f Correccion manual registrada en el historial"
+            )
+            send_message(msg)
 
         elif cmd == "/setthreshold":
             slug = args[0].lower()

@@ -73,11 +73,8 @@ def init_db():
 
 
 def migrate_from_json():
+    from . import config as cfg
     from . import storage as json_store
-    pdata = json_store.load_portfolio_data()
-    if not pdata or not pdata.get("entry_prices"):
-        logger.info("No JSON portfolio data to migrate")
-        return
 
     conn = _conn()
     existing = conn.execute("SELECT COUNT(*) FROM portfolio_positions").fetchone()[0]
@@ -86,20 +83,39 @@ def migrate_from_json():
         conn.close()
         return
 
-    entries = pdata.get("entry_prices", {})
-    qtys = pdata.get("quantities", {})
-    invested = pdata.get("total_invested", 0)
+    pdata = json_store.load_portfolio_data()
+    entries = pdata.get("entry_prices", {}) if pdata else {}
+    qtys = pdata.get("quantities", {}) if pdata else {}
+    invested = pdata.get("total_invested", 0) if pdata else 0
     now = datetime.utcnow().isoformat()
+    migrated_count = 0
 
-    for sym, price in entries.items():
-        qty = qtys.get(sym, 0)
-        cost_basis = qty * price
-        conn.execute("""
-            INSERT INTO portfolio_positions
-                (coin_id, symbol, name, quantity, avg_entry_price, cost_basis_usd,
-                 realized_pnl_usd, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)
-        """, (sym.lower(), sym, "", qty, price, cost_basis, now, now))
+    if entries:
+        for sym, price in entries.items():
+            qty = qtys.get(sym, 0)
+            cost_basis = qty * price
+            conn.execute("""
+                INSERT INTO portfolio_positions
+                    (coin_id, symbol, name, quantity, avg_entry_price, cost_basis_usd,
+                     realized_pnl_usd, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)
+            """, (sym.lower(), sym, "", qty, price, cost_basis, now, now))
+            migrated_count += 1
+        logger.info(f"Migrated {migrated_count} positions from portfolio_data.json")
+    else:
+        entries_from_config = getattr(cfg, "PORTFOLIO", [])
+        for coin_def in entries_from_config:
+            slug = coin_def["slug"]
+            symbol = coin_def["symbol"]
+            name = coin_def["name"]
+            conn.execute("""
+                INSERT INTO portfolio_positions
+                    (coin_id, symbol, name, quantity, avg_entry_price, cost_basis_usd,
+                     realized_pnl_usd, active, created_at, updated_at)
+                VALUES (?, ?, ?, 0, 0, 0, 0, 1, ?, ?)
+            """, (slug, symbol, name, now, now))
+            migrated_count += 1
+        logger.info(f"Bootstrapped {migrated_count} positions from config.PORTFOLIO")
 
     if invested > 0:
         conn.execute("""
@@ -120,7 +136,7 @@ def migrate_from_json():
         shutil.copy2(json_path, backup_path)
         logger.info(f"Backed up portfolio_data.json to portfolio_data.json.bak")
 
-    logger.info(f"Migration complete: {len(entries)} positions migrated")
+    logger.info(f"Migration complete: {migrated_count} positions")
 
 
 # --- Positions ---
