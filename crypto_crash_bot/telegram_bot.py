@@ -13,6 +13,11 @@ from .formatter import (
     format_help, format_watchlist, format_alerts_list, format_error,
     split_long_message,
 )
+from .social import scanner as social_scanner
+from .social.formatter import (
+    format_trends_list, format_early_list, format_hype_list,
+    build_trend_buttons,
+)
 
 session = requests.Session()
 last_update_id = 0
@@ -345,6 +350,25 @@ def handle_command(text):
             wl[slug].setdefault("alert_thresholds", {})[window] = pct
             storage.save_settings(settings)
             send_message(f"OK Threshold for {slug} ({window}): {pct}%")
+
+        elif cmd == "/trends":
+            results = social_scanner.get_trends(limit=15)
+            msg_parts = format_trends_list(results)
+            for part in msg_parts:
+                send_message(part)
+                time.sleep(0.3)
+
+        elif cmd == "/early":
+            results = social_scanner.get_early(limit=15)
+            msg_parts = format_early_list(results)
+            for part in msg_parts:
+                send_message(part)
+                time.sleep(0.3)
+
+        elif cmd == "/hype":
+            results = social_scanner.get_hype(limit=10)
+            msg = format_hype_list(results)
+            send_message(msg)
 
         elif cmd == "/status":
             stats = get_api_stats()

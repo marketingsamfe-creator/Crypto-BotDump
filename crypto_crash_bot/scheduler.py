@@ -8,9 +8,11 @@ from .telegram_bot import (
     poll_updates, send_alert, send_portfolio_report, send_startup_msg,
     delete_webhook,
 )
+from .social import scanner as social_scanner
 
 last_crash_time = 0
 last_portfolio_time = 0
+last_social_scan_time = 0
 
 
 def run_crash_detection():
@@ -59,12 +61,26 @@ def run_portfolio_report():
     send_portfolio_report()
 
 
+def run_social_scan():
+    global last_social_scan_time
+    now = time.time()
+    if now - last_social_scan_time < config.SOCIAL_SCAN_INTERVAL:
+        return
+    last_social_scan_time = now
+    logger.info("Running social trend scan...")
+    try:
+        social_scanner.run_scan()
+    except Exception as e:
+        logger.error(f"Social scan error: {e}")
+
+
 def run_main_loop():
-    global last_crash_time, last_portfolio_time
+    global last_crash_time, last_portfolio_time, last_social_scan_time
 
     logger.info("Bot started — v3 modular")
     last_crash_time = time.time()
     last_portfolio_time = 0
+    last_social_scan_time = 0
 
     delete_webhook()
 
@@ -88,5 +104,10 @@ def run_main_loop():
             run_portfolio_report()
         except Exception as e:
             logger.error(f"Portfolio report error: {e}")
+
+        try:
+            run_social_scan()
+        except Exception as e:
+            logger.error(f"Social scan error: {e}")
 
         time.sleep(config.POLL_INTERVAL)

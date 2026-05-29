@@ -46,6 +46,14 @@ PORTFOLIO = [
 MAX_SNAPSHOTS_PER_COIN = 300
 SNAPSHOT_CLEANUP_AGE = 90000
 
+SOCIAL_SCAN_INTERVAL = int(os.environ.get("SOCIAL_SCAN_INTERVAL_SECONDS", 600))
+MIN_OPPORTUNITY_SCORE = int(os.environ.get("MIN_OPPORTUNITY_SCORE", 70))
+RISK_MODE = os.environ.get("RISK_MODE", "balanced")
+MIN_LIQUIDITY_USD = float(os.environ.get("MIN_LIQUIDITY_USD", 100_000))
+MIN_PAIR_AGE_HOURS = int(os.environ.get("MIN_PAIR_AGE_HOURS", 24))
+ENABLE_DEXSCREENER = os.environ.get("ENABLE_DEXSCREENER", "true").lower() == "true"
+ENABLE_REDDIT = os.environ.get("ENABLE_REDDIT", "false").lower() == "true"
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 if not os.path.exists(DATA_DIR):
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
