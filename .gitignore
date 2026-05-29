@@ -1,0 +1,8 @@
+venv/
+*.pyc
+__pycache__/
+bot_output.log
+bot_error.log
+test_out.log
+test_err.log
+*.log
