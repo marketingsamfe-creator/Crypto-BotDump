@@ -90,6 +90,18 @@ def send_portfolio_report():
         logger.error(f"Portfolio report error: {e}")
 
 
+def delete_webhook():
+    try:
+        resp = session.get(_api_url("deleteWebhook"), params={"drop_pending_updates": "true"}, timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            logger.info("Webhook cleared")
+        else:
+            logger.warning(f"Webhook delete response: {data.get('description', '?')}")
+    except Exception as e:
+        logger.warning(f"Webhook delete error: {e}")
+
+
 def poll_updates():
     global last_update_id
     params = {"offset": last_update_id + 1, "timeout": 10}
@@ -97,6 +109,11 @@ def poll_updates():
         resp = session.get(_api_url("getUpdates"), params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
+
+        if not data.get("ok"):
+            logger.error(f"Telegram API error: {data.get('description', 'unknown')}")
+            return
+
         if not data.get("result"):
             return
 
@@ -115,6 +132,7 @@ def poll_updates():
             if chat_id != config.TELEGRAM_CHAT_ID:
                 continue
             if text.startswith("/"):
+                logger.info(f"Command received: {text.split()[0]}")
                 handle_command(text)
 
     except requests.exceptions.ReadTimeout:

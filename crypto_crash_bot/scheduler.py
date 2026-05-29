@@ -6,6 +6,7 @@ from .coingecko_client import fetch_all_market_coins, get_api_stats
 from .alerts import check_alerts, save_price_snapshots
 from .telegram_bot import (
     poll_updates, send_alert, send_portfolio_report, send_startup_msg,
+    delete_webhook,
 )
 
 last_crash_time = 0
@@ -64,6 +65,8 @@ def run_main_loop():
     logger.info("Bot started — v3 modular")
     last_crash_time = time.time()
     last_portfolio_time = 0
+
+    delete_webhook()
 
     try:
         send_startup_msg()
