@@ -26,6 +26,9 @@ def _build_token_key(source, chain_id, contract_address):
 
 def init_db():
     conn = _conn()
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-8000")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS portfolio_positions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +93,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_transactions_token_key ON portfolio_transactions(token_key);
         CREATE INDEX IF NOT EXISTS idx_transactions_created ON portfolio_transactions(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_cash_created ON cash_movements(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_positions_is_test ON portfolio_positions(is_test);
+        CREATE INDEX IF NOT EXISTS idx_positions_updated ON portfolio_positions(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_transactions_is_test ON portfolio_transactions(is_test);
+        CREATE INDEX IF NOT EXISTS idx_transactions_type ON portfolio_transactions(type);
     """)
     conn.commit()
 

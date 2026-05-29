@@ -461,6 +461,7 @@ def delete_webhook():
 
 def poll_updates():
     global last_update_id
+    _poll_start = time.time()
     params = {"offset": last_update_id + 1, "timeout": 10}
     try:
         resp = session.get(_api_url("getUpdates"), params=params, timeout=15)
@@ -494,9 +495,14 @@ def poll_updates():
         pass
     except Exception as e:
         logger.error(f"Poll error: {e}")
+    finally:
+        _poll_elapsed = (time.time() - _poll_start) * 1000
+        if config.ENABLE_PERFORMANCE_LOGS and _poll_elapsed > 100:
+            logger.info(f"POLL: {_poll_elapsed:.0f}ms")
 
 
 def handle_callback(cb):
+    _start = time.time()
     cb_data = cb.get("data", "")
     from_id = str(cb.get("from", {}).get("id", ""))
     if from_id != config.TELEGRAM_CHAT_ID:
@@ -661,6 +667,12 @@ def handle_callback(cb):
         }, timeout=10)
     except Exception:
         pass
+    finally:
+        _dur_ms = (time.time() - _start) * 1000
+        if _dur_ms > config.SLOW_COMMAND_THRESHOLD_MS:
+            logger.warning(f"SLOW_CALLBACK {cb_data}: {_dur_ms:.0f}ms")
+        if config.ENABLE_PERFORMANCE_LOGS:
+            logger.info(f"CALLBACK {cb_data}: {_dur_ms:.0f}ms")
 
 
 def _get_usage_error(cmd):
@@ -693,6 +705,7 @@ def _flow_cancel_handler():
 
 
 def handle_command(text):
+    _start = time.time()
     parts = text.strip().split()
     cmd = parts[0].lower()
     args = parts[1:]
@@ -1380,6 +1393,50 @@ def handle_command(text):
                 btns = trading_ui.build_token_menu_buttons(slug, symbol)
             send_message(msg, buttons=btns)
 
+        elif cmd == "/perftest":
+            send_processing()
+            slugs = ["all-oracle", "troll-face", "bonk"]
+            lines = ["\U0001f9e0 <b>Performance Test</b>\n"]
+            total = 0.0
+            for s in slugs:
+                t0 = time.time()
+                tok = trading_ui.resolve_token(s)
+                dt = (time.time() - t0) * 1000
+                total += dt
+                ok = "\u2705" if tok else "\u274c"
+                lines.append(f"{ok} {s}: {dt:.0f}ms")
+            lines.append(f"\n<b>Total:</b> {total:.0f}ms | <b>Avg:</b> {total/len(slugs):.0f}ms")
+            lines.append(f"\n<b>Cache:</b> hit rate {cache.get_global_hit_rate():.1%}")
+            s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            if s:
+                lines.append(f"\n<b>Active session:</b> flow={s.get('flow', 'none')}, step={s.get('step', 'none')}")
+            send_message("\n".join(lines))
+
+        elif cmd == "/testflows":
+            if not config.TEST_MODE:
+                send_message("\u26a0\ufe0f Solo disponible en TEST_MODE=true")
+                return
+            send_processing()
+            msg_parts = ["\U0001f9ea <b>Flow Test</b>\n"]
+            # Test buy flow with multi-chain resolve
+            from session import parse_positive_decimal
+            test_vals = ["100", "50,5", "-10", "abc"]
+            msg_parts.append("<b>parse_positive_decimal tests:</b>")
+            for v in test_vals:
+                r = parse_positive_decimal(v)
+                msg_parts.append(f"  '{v}' -> {r}")
+            msg_parts.append("")
+            s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            if s:
+                msg_parts.append(f"<b>Active session:</b> flow={s.get('flow')}, step={s.get('step')}")
+                msg_parts.append(f"  slug={s['data'].get('slug')}, source={s['data'].get('source')}")
+            else:
+                msg_parts.append("No active session.")
+            msg_parts.append("")
+            msg_parts.append("<b>Cache stats:</b>")
+            msg_parts.append(f"  Hit rate: {cache.get_global_hit_rate():.1%}")
+            send_message("\n".join(msg_parts))
+
         elif cmd == "/status":
             stats = get_api_stats()
             msg = format_status(stats)
@@ -1406,6 +1463,12 @@ def handle_command(text):
     except Exception as e:
         logger.error(f"Command error ({cmd}): {e}")
         send_message(format_error(f"Error inesperado. Intenta de nuevo."))
+    finally:
+        _dur_ms = (time.time() - _start) * 1000
+        if _dur_ms > config.SLOW_COMMAND_THRESHOLD_MS:
+            logger.warning(f"SLOW_COMMAND {cmd}: {_dur_ms:.0f}ms")
+        if config.ENABLE_PERFORMANCE_LOGS:
+            logger.info(f"CMD {cmd}: {_dur_ms:.0f}ms")
 
 
 def _cancel_button():
@@ -1624,9 +1687,10 @@ def _handle_buy_callback(cb_data):
 
     elif action == "resolve":
         sym = symbol.upper()
+        send_message("\U0001f50e <b>Resolving token...</b>")
         token = trading_ui.resolve_token(slug)
         if not token:
-            send_message(f"No se pudo resolver {slug}.")
+            send_message(f"\u274c No se pudo resolver {slug}.")
             return
         sym = token.get("symbol", sym)
         slug = token.get("slug", slug)
@@ -1636,8 +1700,13 @@ def _handle_buy_callback(cb_data):
         session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_active", {
             "slug": slug, "symbol": sym, "name": token.get("name", sym),
             "current_price": token.get("current_price"),
-        })
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "token_menu")
+            "token_key": token.get("token_key", ""),
+            "source": token.get("source", "dexscreener"),
+            "chain_id": token.get("chain_id", ""),
+            "contract_address": token.get("contract_address", ""),
+            "pair_address": token.get("pair_address", ""),
+            "dex_id": token.get("dex_id", ""),
+        }, step="token_menu")
         send_message(text, buttons=btns)
 
     elif action == "refresh":
@@ -1947,9 +2016,10 @@ def _handle_buy_waiting_text(text):
     data = active.get("data", {})
 
     if step == "waiting_token_input":
+        send_message("\U0001f50e <b>Resolving token...</b>")
         token = trading_ui.resolve_token(text)
         if not token:
-            send_message(f"No se encontro <b>{text}</b>. Intenta con otro nombre o ID.",
+            send_message(f"\u274c No se encontro <b>{text}</b>. Intenta con otro nombre o ID.",
                          buttons={"inline_keyboard": [[
                              {"text": "\u274c Cancel", "callback_data": "flow:cancel"}
                          ]]})
@@ -1968,7 +2038,17 @@ def _handle_buy_waiting_text(text):
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "contract_address", token.get("contract_address", ""))
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "pair_address", token.get("pair_address", ""))
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "dex_id", token.get("dex_id", ""))
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "token_menu")
+        session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+        session_mgr.create_session(config.TELEGRAM_CHAT_ID, "buy_active", {
+            "slug": slug, "symbol": sym, "name": token.get("name", sym),
+            "current_price": token.get("current_price"),
+            "token_key": token.get("token_key", ""),
+            "source": token.get("source", "dexscreener"),
+            "chain_id": token.get("chain_id", ""),
+            "contract_address": token.get("contract_address", ""),
+            "pair_address": token.get("pair_address", ""),
+            "dex_id": token.get("dex_id", ""),
+        }, step="token_menu")
         send_message(card, buttons=btns)
         return True
 

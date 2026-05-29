@@ -57,6 +57,28 @@ DUMPS_LIMIT = int(os.environ.get("DUMPS_LIMIT", "10"))
 DUMPS_MAX_COINS = int(os.environ.get("DUMPS_MAX_COINS", "500"))
 DUMPS_WINDOWS = ["5m", "15m", "1h", "24h", "7d"]
 
+ENABLE_PERFORMANCE_LOGS = os.environ.get("ENABLE_PERFORMANCE_LOGS", "true").lower() == "true"
+HTTP_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("HTTP_CONNECT_TIMEOUT_SECONDS", "3"))
+HTTP_READ_TIMEOUT_SECONDS = int(os.environ.get("HTTP_READ_TIMEOUT_SECONDS", "7"))
+HTTP_TOTAL_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TOTAL_TIMEOUT_SECONDS", "10"))
+HTTP_MAX_RETRIES = int(os.environ.get("HTTP_MAX_RETRIES", "2"))
+
+TOKEN_RESOLVE_CACHE_TTL = int(os.environ.get("TOKEN_RESOLVE_CACHE_TTL", "900"))
+TOKEN_PRICE_CACHE_TTL = int(os.environ.get("TOKEN_PRICE_CACHE_TTL", "60"))
+DEX_PAIR_CACHE_TTL = int(os.environ.get("DEX_PAIR_CACHE_TTL", "120"))
+COINGECKO_MARKETS_CACHE_TTL = int(os.environ.get("COINGECKO_MARKETS_CACHE_TTL", "120"))
+PORTFOLIO_CACHE_TTL = int(os.environ.get("PORTFOLIO_CACHE_TTL", "60"))
+DUMPS_CACHE_TTL = int(os.environ.get("DUMPS_CACHE_TTL", "120"))
+HYPE_CACHE_TTL = int(os.environ.get("HYPE_CACHE_TTL", "180"))
+TRENDS_CACHE_TTL = int(os.environ.get("TRENDS_CACHE_TTL", "300"))
+SOCIAL_CACHE_TTL = int(os.environ.get("SOCIAL_CACHE_TTL", "600"))
+
+MARKET_JOB_INTERVAL_SECONDS = int(os.environ.get("MARKET_JOB_INTERVAL_SECONDS", "120"))
+SOCIAL_JOB_INTERVAL_SECONDS = int(os.environ.get("SOCIAL_JOB_INTERVAL_SECONDS", "600"))
+ALERT_JOB_INTERVAL_SECONDS = int(os.environ.get("ALERT_JOB_INTERVAL_SECONDS", "60"))
+SLOW_COMMAND_THRESHOLD_MS = int(os.environ.get("SLOW_COMMAND_THRESHOLD_MS", "3000"))
+SLOW_API_THRESHOLD_MS = int(os.environ.get("SLOW_API_THRESHOLD_MS", "2000"))
+
 SOCIAL_SCAN_INTERVAL = int(os.environ.get("SOCIAL_SCAN_INTERVAL_SECONDS", 600))
 MIN_OPPORTUNITY_SCORE = int(os.environ.get("MIN_OPPORTUNITY_SCORE", 70))
 RISK_MODE = os.environ.get("RISK_MODE", "balanced")
