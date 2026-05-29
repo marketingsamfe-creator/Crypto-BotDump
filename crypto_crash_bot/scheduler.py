@@ -6,7 +6,7 @@ from .coingecko_client import fetch_all_market_coins, get_api_stats
 from .alerts import check_alerts, save_price_snapshots
 from .telegram_bot import (
     poll_updates, send_alert, send_portfolio_report, send_startup_msg,
-    delete_webhook,
+    delete_webhook, set_bot_commands,
 )
 from .social import scanner as social_scanner
 
@@ -83,6 +83,7 @@ def run_main_loop():
     last_social_scan_time = 0
 
     delete_webhook()
+    set_bot_commands()
 
     try:
         send_startup_msg()

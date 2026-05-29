@@ -155,10 +155,14 @@ def format_portfolio_report(result):
         lines.append(
             f"{e} <b>{token['symbol']} — {token['name']}</b>"
         )
-        lines.append(
-            f"   Price: {_fmt_price(token['price'])} | "
-            f"24h: {_fmt_change(token['change_24h'])}"
-        )
+        changes_line = f"   Price: {_fmt_price(token['price'])}"
+        if token.get("change_1h") is not None:
+            changes_line += f" | 1h: {_fmt_change(token['change_1h'])}"
+        if token.get("change_24h") is not None:
+            changes_line += f" | 24h: {_fmt_change(token['change_24h'])}"
+        if token.get("change_7d") is not None:
+            changes_line += f" | 7d: {_fmt_change(token['change_7d'])}"
+        lines.append(changes_line)
 
         if token["quantity"] and token["quantity"] > 0:
             lines.append(
@@ -376,3 +380,34 @@ def format_alerts_list(alerts):
 
 def format_error(msg):
     return f"❌ {msg}"
+
+
+def format_api_error(source="CoinGecko"):
+    return (
+        f"\u26a0\ufe0f Error al consultar {source}.\n"
+        "La API puede estar temporalmente caída o con limite de requests.\n"
+        "Intenta de nuevo en unos minutos."
+    )
+
+
+def format_usage_error(cmd, required, examples):
+    lines = [
+        f"\u26a0\ufe0f <b>Uso incorrecto</b>",
+        f"<b>{cmd}</b> requiere los siguientes argumentos:",
+    ]
+    if required:
+        for r in required:
+            lines.append(f"  \u2022 <code>{r}</code> (obligatorio)")
+    lines.append("")
+    if examples:
+        lines.append("<b>Ejemplos:</b>")
+        for ex in examples:
+            lines.append(f"  <code>{ex}</code>")
+    return "\n".join(lines)
+
+
+def format_not_found(query):
+    return (
+        f"No se encontr\u00f3 <b>{query}</b>.\n"
+        "Verifica el nombre o ID del token. Usa /search para buscar."
+    )

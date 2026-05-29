@@ -1,14 +1,13 @@
 from . import config, storage
-from .coingecko_client import fetch_simple_price
-
-
-def _slug_list():
-    return ",".join(p["slug"] for p in config.PORTFOLIO)
+from .coingecko_client import fetch_market_coins_by_ids
 
 
 def fetch_prices():
-    data = fetch_simple_price(_slug_list())
-    return data if data else {}
+    slugs = [p["slug"] for p in config.PORTFOLIO]
+    data = fetch_market_coins_by_ids(slugs, changes="1h,24h,7d")
+    if not data:
+        return {}
+    return {c["id"]: c for c in data}
 
 
 def calculate_portfolio():
@@ -40,8 +39,10 @@ def calculate_portfolio():
         if not data:
             continue
 
-        price = data.get("usd", 0)
-        change_24h = data.get("usd_24h_change")
+        price = data.get("current_price", 0)
+        change_1h = data.get("price_change_percentage_1h_in_currency")
+        change_24h = data.get("price_change_percentage_24h")
+        change_7d = data.get("price_change_percentage_7d_in_currency")
         sym = coin["symbol"]
         entry = entry_prices.get(sym)
         qty = quantities.get(sym, 0)
@@ -50,7 +51,6 @@ def calculate_portfolio():
         position_value = qty * price if qty > 0 else 0
         pnl_pct = None
         pnl_usd = None
-        pnl_label = None
 
         if entry and entry > 0:
             pnl_pct = ((price - entry) / entry) * 100
@@ -62,7 +62,9 @@ def calculate_portfolio():
             "symbol": sym,
             "name": coin["name"],
             "price": price,
+            "change_1h": change_1h,
             "change_24h": change_24h,
+            "change_7d": change_7d,
             "quantity": qty,
             "position_value": position_value,
             "entry_price": entry,

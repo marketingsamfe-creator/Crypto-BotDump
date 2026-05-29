@@ -166,6 +166,20 @@ def search_coins(query):
     return matches
 
 
+def fetch_market_coins_by_ids(ids, changes="1h,24h,7d"):
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": config.VS_CURRENCY,
+        "ids": ",".join(ids),
+        "order": "market_cap_desc",
+        "per_page": len(ids),
+        "page": 1,
+        "price_change_percentage": changes,
+        "sparkline": "false",
+    }
+    return _request("GET", url, params=params)
+
+
 def fetch_all_market_coins():
     all_coins = []
     for page in range(1, config.MAX_PAGES + 1):
