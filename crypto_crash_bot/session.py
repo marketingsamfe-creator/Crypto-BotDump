@@ -1,132 +1,244 @@
 import time
+import json
 import re
+import os
+import sqlite3
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 from .logger import logger
-from . import config
 
 SESSION_TTL = 900
+SLOW_THRESHOLD = 3000
 
-_sessions = {}
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "portfolio.db")
+
 CMD_LATENCY = {}
+
+
+def _conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _init_user_sessions_table():
+    conn = _conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            session_key TEXT PRIMARY KEY,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            flow TEXT NOT NULL,
+            step TEXT NOT NULL DEFAULT '',
+            data_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires
+        ON user_sessions(expires_at)
+    """)
+    conn.commit()
+    conn.close()
 
 
 def _now():
     return time.time()
 
 
-def _session_key(user_id, chat_id=None):
-    if chat_id:
-        return f"{chat_id}:{user_id}"
-    return str(user_id)
+def _format_ts(t=None):
+    return datetime.utcfromtimestamp(t or _now()).isoformat()
 
 
-def get_session(user_id, chat_id=None):
+def _session_key(chat_id, user_id):
+    return f"{chat_id}:{user_id}"
+
+
+def _get_session(chat_id, user_id):
     cleanup()
-    key = _session_key(user_id, chat_id)
-    s = _sessions.get(key)
-    if s and _now() > s.get("expires_at", 0):
-        logger.info(f"Session expired: user={user_id} key={key}")
-        del _sessions[key]
-        return None
-    return s
+    key = _session_key(chat_id, user_id)
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM user_sessions WHERE session_key = ?", (key,)
+    ).fetchone()
+    conn.close()
+    if row:
+        expires = datetime.fromisoformat(row["expires_at"]).timestamp()
+        if _now() > expires:
+            logger.info(f"SESSION_EXPIRED key={key}")
+            _clear_session(chat_id, user_id)
+            return None
+        return {
+            "chat_id": row["chat_id"],
+            "user_id": row["user_id"],
+            "flow": row["flow"],
+            "step": row["step"],
+            "data": json.loads(row["data_json"]) if row["data_json"] else {},
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+        }
+    return None
 
 
-def create_session(user_id, flow, data=None, step=None, chat_id=None):
-    key = _session_key(user_id, chat_id)
-    existing = _sessions.get(key)
-    if existing:
-        cancel_session(user_id, chat_id)
+def _create_session(chat_id, user_id, flow, data=None, step=None):
+    _clear_session(chat_id, user_id)
+    key = _session_key(chat_id, user_id)
     now = _now()
-    _sessions[key] = {
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "flow": flow,
-        "step": step,
-        "data": data or {},
-        "created_at": now,
-        "expires_at": now + SESSION_TTL,
-    }
-    logger.info(f"SESSION_START user={user_id} chat={chat_id} flow={flow} step={step}")
-    return _sessions[key]
+    now_ts = _format_ts(now)
+    expires_ts = _format_ts(now + SESSION_TTL)
+    data_json = json.dumps(data or {})
+    conn = _conn()
+    conn.execute("""
+        INSERT INTO user_sessions (session_key, chat_id, user_id, flow, step, data_json, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (key, chat_id, user_id, flow, step or "", data_json, now_ts, expires_ts))
+    conn.commit()
+    conn.close()
+    logger.info(f"SESSION_CREATE key={key} flow={flow} step={step}")
+    return _get_session(chat_id, user_id)
 
 
-def set_step(user_id, step, chat_id=None):
-    key = _session_key(user_id, chat_id)
-    s = _sessions.get(key)
-    if s:
-        old = s.get("step")
-        s["step"] = step
-        s["expires_at"] = _now() + SESSION_TTL
-        logger.info(f"SESSION_TRANSITION flow={s['flow']} from={old} to={step}")
-        return True
-    return False
+def _update_session(chat_id, user_id, updates):
+    key = _session_key(chat_id, user_id)
+    conn = _conn()
+    row = conn.execute(
+        "SELECT * FROM user_sessions WHERE session_key = ?", (key,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False
+    data = json.loads(row["data_json"]) if row["data_json"] else {}
+    flow = updates.get("flow", row["flow"])
+    step = updates.get("step", row["step"])
+    if "data" in updates:
+        data.update(updates["data"])
+    data_json = json.dumps(data)
+    expires_ts = _format_ts(_now() + SESSION_TTL)
+    conn.execute("""
+        UPDATE user_sessions SET flow=?, step=?, data_json=?, expires_at=?
+        WHERE session_key=?
+    """, (flow, step, data_json, expires_ts, key))
+    conn.commit()
+    conn.close()
+    log_msg = f"SESSION_UPDATE key={key}"
+    if "step" in updates:
+        log_msg += f" step={updates['step']}"
+    logger.info(log_msg)
+    return True
 
 
-def set_data(user_id, key, value, chat_id=None):
-    key_s = _session_key(user_id, chat_id)
-    s = _sessions.get(key_s)
-    if s:
-        s["data"][key] = value
-        s["expires_at"] = _now() + SESSION_TTL
-        return True
-    return False
+def _set_step(chat_id, user_id, step):
+    return _update_session(chat_id, user_id, {"step": step})
 
 
-def get_data(user_id, key, default=None, chat_id=None):
-    key_s = _session_key(user_id, chat_id)
-    s = _sessions.get(key_s)
+def _set_data(chat_id, user_id, key, value):
+    return _update_session(chat_id, user_id, {"data": {key: value}})
+
+
+def _update_data(chat_id, user_id, updates_dict):
+    return _update_session(chat_id, user_id, {"data": updates_dict})
+
+
+def _get_data(chat_id, user_id, key, default=None):
+    s = _get_session(chat_id, user_id)
     if s:
         return s["data"].get(key, default)
     return default
 
 
-def update_data(user_id, updates, chat_id=None):
-    key_s = _session_key(user_id, chat_id)
-    s = _sessions.get(key_s)
-    if s:
-        s["data"].update(updates)
-        s["expires_at"] = _now() + SESSION_TTL
-        return True
-    return False
+def _clear_session(chat_id, user_id):
+    key = _session_key(chat_id, user_id)
+    conn = _conn()
+    row = conn.execute(
+        "SELECT flow FROM user_sessions WHERE session_key = ?", (key,)
+    ).fetchone()
+    flow = row["flow"] if row else "unknown"
+    conn.execute("DELETE FROM user_sessions WHERE session_key = ?", (key,))
+    conn.commit()
+    conn.close()
+    logger.info(f"SESSION_CLEAR key={key} flow={flow}")
 
 
-def cancel_session(user_id, chat_id=None):
-    key = _session_key(user_id, chat_id)
-    if key in _sessions:
-        s = _sessions[key]
-        logger.info(f"SESSION_CLEAR user={user_id} flow={s.get('flow')} reason=cancelled")
-        del _sessions[key]
-        return True
-    return False
-
-
-def complete_session(user_id, chat_id=None):
-    key = _session_key(user_id, chat_id)
-    if key in _sessions:
-        s = _sessions[key]
-        logger.info(f"SESSION_COMPLETE user={user_id} flow={s.get('flow')} data={s.get('data')}")
-        del _sessions[key]
-        return True
-    return False
-
-
-def has_active_session(user_id, chat_id=None):
-    key = _session_key(user_id, chat_id)
-    s = _sessions.get(key)
-    return s is not None and _now() <= s.get("expires_at", 0)
+def _has_active_session(chat_id, user_id):
+    return _get_session(chat_id, user_id) is not None
 
 
 def cleanup():
-    now = _now()
-    expired = []
-    for key, s in list(_sessions.items()):
-        if now > s.get("expires_at", 0):
-            expired.append(key)
-    for key in expired:
-        logger.info(f"Session expired: key={key}")
-        del _sessions[key]
-    return len(expired)
+    conn = _conn()
+    now_ts = _format_ts()
+    deleted = conn.execute(
+        "DELETE FROM user_sessions WHERE expires_at < ?", (now_ts,)
+    ).rowcount
+    conn.commit()
+    conn.close()
+    if deleted:
+        logger.info(f"SESSION_CLEANUP deleted={deleted} expired sessions")
+    return deleted
 
+
+# ── Public API (old interface: chat_id-only, chat_id == user_id) ──
+
+def _uid(cid):
+    return int(cid) if not isinstance(cid, int) else cid
+
+
+def get_session(chat_id):
+    uid = _uid(chat_id)
+    return _get_session(uid, uid)
+
+
+def create_session(chat_id, flow, data=None, step=None):
+    uid = _uid(chat_id)
+    return _create_session(uid, uid, flow, data, step)
+
+
+def set_step(chat_id, step):
+    uid = _uid(chat_id)
+    return _set_step(uid, uid, step)
+
+
+def set_data(chat_id, key, value):
+    uid = _uid(chat_id)
+    return _set_data(uid, uid, key, value)
+
+
+def update_data(chat_id, updates):
+    uid = _uid(chat_id)
+    return _update_data(uid, uid, updates)
+
+
+def get_data(chat_id, key, default=None):
+    uid = _uid(chat_id)
+    return _get_data(uid, uid, key, default)
+
+
+def cancel_session(chat_id):
+    uid = _uid(chat_id)
+    _clear_session(uid, uid)
+
+
+def has_active_session(chat_id):
+    uid = _uid(chat_id)
+    return _has_active_session(uid, uid)
+
+
+# ── New public API (explicit chat_id, user_id) ──
+new_get_session = _get_session
+new_create_session = _create_session
+new_set_step = _set_step
+new_set_data = _set_data
+new_update_data = _update_data
+new_get_data = _get_data
+new_clear_session = _clear_session
+new_has_active_session = _has_active_session
+
+
+# ── Performance recording ──
 
 def record_latency(command, duration_ms):
     if command not in CMD_LATENCY:
@@ -157,6 +269,8 @@ def get_slowest_command():
     return max(CMD_LATENCY.items(), key=lambda x: x[1]["avg_ms"])
 
 
+# ── Decimal parsing ──
+
 DECIMAL_RE = re.compile(r"^[0-9]+([.,][0-9]+)?$")
 
 
@@ -184,3 +298,7 @@ def parse_non_negative_decimal(text):
         return val
     except InvalidOperation:
         return None
+
+
+# Init table on import
+_init_user_sessions_table()

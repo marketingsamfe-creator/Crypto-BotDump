@@ -88,6 +88,9 @@ CMD_DEFS = {
     "/testcontracts": {"args": [], "desc": "Probar resolucion de contratos"},
     "/debugtoken": {"args": [("query", True)], "desc": "Debug resolucion de token",
         "examples": ["/debugtoken 0x...", "/debugtoken TAO"]},
+    "/debugsession": {"args": [], "desc": "Ver estado de la sesion actual"},
+    "/clearsession": {"args": [], "desc": "Limpiar sesion manualmente"},
+    "/testregister": {"args": [], "desc": "Prueba controlada de registro"},
 }
 
 BOT_COMMANDS = [
@@ -124,6 +127,9 @@ BOT_COMMANDS = [
     {"command": "dumps", "description": "Top tokens en caida"},
     {"command": "debugtoken", "description": "Debug resolucion de token"},
     {"command": "testcontracts", "description": "Probar resolucion de contratos"},
+    {"command": "debugsession", "description": "Ver estado de la sesion actual"},
+    {"command": "clearsession", "description": "Limpiar sesion manualmente"},
+    {"command": "testregister", "description": "Prueba controlada de registro"},
     {"command": "help", "description": "Ayuda"},
 ]
 
@@ -896,6 +902,37 @@ def handle_command(text):
         elif cmd == "/cancel":
             _flow_cancel_handler()
 
+        elif cmd == "/debugsession":
+            sess = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            if not sess:
+                send_message("\u2139\ufe0f No active session.")
+            else:
+                data = sess.get("data", {})
+                slug = data.get("slug") or data.get("symbol", "-")
+                exp = sess.get("expires_at", "")
+                lines = [
+                    "\U0001f9e0 <b>Session</b>\n",
+                    f"Flow: <code>{sess.get('flow', '-')}</code>",
+                    f"Step: <code>{sess.get('step', '-')}</code>",
+                    f"Token: {slug}",
+                    f"Expires: {exp[:19] if exp else '-'}",
+                    "",
+                    "<b>Data:</b>",
+                ]
+                for k, v in sorted(data.items()):
+                    lines.append(f"  {k}: {v}")
+                send_message("\n".join(lines))
+
+        elif cmd == "/clearsession":
+            session_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+            send_message("\u2705 Session cleared.")
+
+        elif cmd == "/testregister":
+            if not config.TEST_MODE:
+                send_message("\u26a0\ufe0f Only available in TEST_MODE=true")
+            else:
+                _run_test_register()
+
         elif cmd in ("/search", "/precio", "/buscar"):
             mid = send_loading("\U0001f50e <b>Looking up token...</b>")
             query = " ".join(args)
@@ -1638,7 +1675,7 @@ def handle_command(text):
                 return
             mid = send_loading("\U0001f9ea <b>Testing flows...</b>")
             msg_parts = ["\U0001f9ea <b>Flow Test</b>\n"]
-            from session import parse_positive_decimal
+            from .session import parse_positive_decimal
             test_vals = ["100", "50,5", "-10", "abc"]
             msg_parts.append("<b>parse_positive_decimal tests:</b>")
             for v in test_vals:
@@ -1904,10 +1941,10 @@ def _handle_buy_callback(cb_data):
 
     elif action == "quick":
         amount_usd = float(parts[4]) if len(parts) > 4 else 0
-        data = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        if not data:
+        sess = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+        if not sess:
             return
-        price = data["data"].get("current_price")
+        price = sess["data"].get("current_price")
         if not price or price <= 0:
             send_message("Precio actual no disponible. Edita el precio manualmente.",
                          buttons=trading_ui.buy_price_buttons(slug, symbol))
@@ -1916,8 +1953,10 @@ def _handle_buy_callback(cb_data):
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "amount_usd", amount_usd)
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
-        msg = trading_ui.build_buy_confirm_text(slug, symbol, data["data"])
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "buy_confirm")
+        fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+        fresh_data = fresh["data"] if fresh else sess["data"]
+        msg = trading_ui.build_buy_confirm_text(slug, symbol, fresh_data)
         btns = trading_ui.buy_confirm_buttons(slug, symbol)
         send_message(msg, buttons=btns)
 
@@ -1954,9 +1993,10 @@ def _handle_buy_callback(cb_data):
         price = s["data"].get("current_price")
         if price and price > 0:
             session_mgr.set_data(config.TELEGRAM_CHAT_ID, "price", price)
-            data = s["data"]
-            amount = data.get("amount_usd", 0)
-            if amount > 0 and "quantity" not in data:
+            fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+            fresh_data = fresh["data"] if fresh else s["data"]
+            amount = fresh_data.get("amount_usd", 0)
+            if amount > 0 and not fresh_data.get("quantity"):
                 qty = round(amount / price, 6)
                 session_mgr.set_data(config.TELEGRAM_CHAT_ID, "quantity", qty)
             session_mgr.set_step(config.TELEGRAM_CHAT_ID, "waiting_buy_fee")
@@ -1971,9 +2011,9 @@ def _handle_buy_callback(cb_data):
 
     elif action == "no_fee":
         session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", 0)
-        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
-        s = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
-        data = s["data"] if s else {}
+        session_mgr.set_step(config.TELEGRAM_CHAT_ID, "buy_confirm")
+        fresh = session_mgr.get_session(config.TELEGRAM_CHAT_ID)
+        data = fresh["data"] if fresh else {}
         msg = trading_ui.build_buy_confirm_text(slug, symbol, data)
         btns = trading_ui.buy_confirm_buttons(slug, symbol)
         send_message(msg, buttons=btns)
@@ -2260,7 +2300,7 @@ def _handle_buy_active_text(text):
         symbol = data.get("symbol", "")
 
         if step == "waiting_buy_amount":
-            from session import parse_positive_decimal as _parse_dec
+            from .session import parse_positive_decimal as _parse_dec
             amt = _parse_dec(text)
             if amt is None:
                 send_message("\u274c Invalid amount.\n\nPlease enter a positive number.\nExample:\n100")
@@ -2296,7 +2336,7 @@ def _handle_buy_active_text(text):
                 send_message("\u26a0\ufe0f Session expired. Please start again with /buy.")
                 return True
             fresh_data = fresh.get("data", {})
-            from session import parse_positive_decimal as _parse_dec
+            from .session import parse_positive_decimal as _parse_dec
             px = _parse_dec(text)
             if px is None:
                 send_message("\u274c Enter a valid price.\nExample:\n0.0042")
@@ -2323,15 +2363,15 @@ def _handle_buy_active_text(text):
                 send_message("\u26a0\ufe0f Session expired. Please start again with /buy.")
                 return True
             fresh_data = fresh.get("data", {})
-            from session import parse_non_negative_decimal as _parse_nonneg
+            from .session import parse_non_negative_decimal as _parse_nonneg
             fee_dec = _parse_nonneg(text)
             if fee_dec is None:
                 send_message("\u274c Enter a valid fee (e.g. 2.50 or 0).")
                 return True
             fee = float(fee_dec)
             session_mgr.set_data(config.TELEGRAM_CHAT_ID, "fee", fee)
-            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "confirm_buy")
-            logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_fee to=confirm_buy fee={fee}")
+            session_mgr.set_step(config.TELEGRAM_CHAT_ID, "buy_confirm")
+            logger.info(f"SESSION_TRANSITION flow=buy from=waiting_buy_fee to=buy_confirm fee={fee}")
             msg = trading_ui.build_buy_confirm_text(slug, symbol, fresh_data)
             btns = trading_ui.buy_confirm_buttons(slug, symbol)
             send_message(msg, buttons=btns)
@@ -2542,6 +2582,86 @@ def _test_single_contract(tc):
         result.get("sell_ok"),
     ])
     return result
+
+
+# ── TEST REGISTER FLOW ────────────────────────────────────────────────────
+
+def _run_test_register():
+    from . import portfolio_db as pdb
+    from . import session as sess_mgr
+
+    results = {"session_capture": False, "buy_insert": False,
+               "position_update": False, "sell_insert": False,
+               "position_after_sell": False, "session_clear": False}
+    old_test_mode = config.TEST_MODE
+    try:
+        config.TEST_MODE = True
+        pdb.clear_test_data()
+
+        sym = "TEST"
+        slug = "test-token-for-register"
+        token_key = "dexscreener:test:test"
+        price = 0.42
+        qty = 10.0
+        amount = qty * price
+        fee = 0.5
+
+        # 1. Create a position
+        pos = pdb.add_position(
+            slug, sym, "Test Token",
+            token_key=token_key, source="dexscreener",
+            chain_id="test", contract_address="0xtest",
+            pair_address="0xtestpair", dex_id="testdex",
+            is_test=1
+        )
+        if pos:
+            results["session_capture"] = True
+
+        # 2. Buy
+        updated = pdb.update_position_after_buy(
+            sym, qty, price, fee, token_key=token_key, is_test=1
+        )
+        if updated:
+            results["buy_insert"] = True
+
+        # 3. Verify position
+        pos2 = pdb.get_position(symbol=sym, token_key=token_key, is_test=1)
+        if pos2 and pos2["quantity"] == qty:
+            results["position_update"] = True
+
+        # 4. Sell half
+        half_qty = qty / 2
+        result = pdb.update_position_after_sell(
+            sym, half_qty, price, 0, token_key=token_key, is_test=1
+        )
+        if result:
+            results["sell_insert"] = True
+            updated2, rpnl, proceeds = result
+            if updated2 and updated2["quantity"] == half_qty:
+                results["position_after_sell"] = True
+
+        # 5. Cancel/clear session
+        sess_mgr.cancel_session(config.TELEGRAM_CHAT_ID)
+        if not sess_mgr.get_session(config.TELEGRAM_CHAT_ID):
+            results["session_clear"] = True
+
+        pdb.clear_test_data()
+    except Exception as e:
+        logger.error(f"TEST_REGISTER error: {e}", exc_info=True)
+    finally:
+        config.TEST_MODE = old_test_mode
+
+    passed = all(results.values())
+    lines = [
+        "\U0001f9ea <b>Register Flow Test</b>\n",
+    ]
+    for k, v in results.items():
+        label = k.replace("_", " ").title()
+        icon = "\u2705" if v else "\u274c"
+        lines.append(f"{icon} {label}")
+    lines.append("")
+    lines.append(f"<b>Result: {'PASS' if passed else 'FAIL'}</b>")
+    send_message("\n".join(lines))
 
 
 # ── SESSION INPUT ROUTER ──────────────────────────────────────────────────
