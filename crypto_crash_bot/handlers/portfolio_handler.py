@@ -12,25 +12,87 @@ from ..utils.calculations import (
 from ..utils.formatters import format_portfolio_summary, format_token_position
 from ..utils.validators import parse_portfolio_line
 from ..formatter import format_usd
+from ..cache import get_price_cache
 
 TELEGRAM_ID = config.TELEGRAM_CHAT_ID
 
+PRICE_CACHE_TTL = 60
+
+
+def _fetch_prices_batch(slugs: list) -> dict:
+    if not slugs:
+        return {}
+    from ..coingecko_client import fetch_market_coins_by_ids
+    cache = get_price_cache()
+    result = {}
+    uncached = []
+    for slug in slugs:
+        cached = cache.get(f"price:{slug}")
+        if cached:
+            result[slug] = cached
+        else:
+            uncached.append(slug)
+    if uncached:
+        try:
+            market_data = fetch_market_coins_by_ids(uncached, changes="1h,24h,7d")
+            if market_data:
+                for c in market_data:
+                    cid = c["id"]
+                    result[cid] = c
+                    cache.set(f"price:{cid}", c, ttl=PRICE_CACHE_TTL)
+        except Exception as e:
+            logger.warning(f"Batch price fetch error: {e}")
+    return result
+
+
+def _resolve_coin_id(symbol: str) -> str:
+    try:
+        tok = trading_ui.resolve_token(symbol)
+        if tok and tok.get("slug"):
+            slug = tok["slug"]
+            logger.info(f"RESOLVE symbol={symbol} -> slug={slug}")
+            return slug
+    except Exception as e:
+        logger.warning(f"RESOLVE error for {symbol}: {e}")
+    fallback = symbol.lower()
+    logger.info(f"RESOLVE symbol={symbol} -> fallback={fallback}")
+    return fallback
+
 
 def handle_portfolio(args: list) -> str:
-    positions = portfolio_db.get_all_positions(is_test=config.TEST_MODE)
+    positions = portfolio_db.get_active_positions(is_test=config.TEST_MODE)
     if not positions:
         return "Your portfolio is empty. Add tokens with /portfolio_add."
+    logger.info(f"PORTFOLIO_SUMMARY: user={TELEGRAM_ID}, positions_found={len(positions)}")
+    slugs = [p["coin_id"] for p in positions if p["coin_id"]]
+    prices = _fetch_prices_batch(slugs)
     pos_list = []
     for pos in positions:
-        current_px = trading_ui.resolve_token_price(pos)
+        sym = pos["symbol"]
+        slug = pos["coin_id"]
         qty = pos["quantity"]
         buy_px = pos["avg_entry_price"]
+        price_data = prices.get(slug, {})
+        current_px = price_data.get("current_price")
+        if current_px is None:
+            logger.warning(f"PORTFOLIO_PRICE_MISSING: symbol={sym}, slug={slug}")
+            pos_list.append({
+                "symbol": sym,
+                "current_value": 0,
+                "invested_value": invested_value(qty, buy_px),
+                "pnl": 0,
+                "pnl_pct": None,
+                "price_unavailable": True,
+            })
+            continue
+        current_px = float(current_px)
         cv = current_value(qty, current_px)
         inv = invested_value(qty, buy_px)
         pnl = unrealized_pnl(qty, current_px, buy_px)
         pnl_pct = unrealized_pnl_percent(current_px, buy_px)
+        logger.info(f"PORTFOLIO_TOKEN: symbol={sym}, qty={qty}, buy={buy_px}, current={current_px}, pnl={pnl}")
         pos_list.append({
-            "symbol": pos["symbol"],
+            "symbol": sym,
             "current_value": cv,
             "invested_value": inv,
             "pnl": pnl,
@@ -40,16 +102,21 @@ def handle_portfolio(args: list) -> str:
     ti = portfolio_total_invested(pos_list)
     tp = portfolio_total_pnl(tv, ti)
     tpp = portfolio_total_pnl_percent(tp, ti)
-    profit_count = sum(1 for p in pos_list if p["pnl"] > 0)
-    loss_count = sum(1 for p in pos_list if p["pnl"] < 0)
-    best = max(pos_list, key=lambda p: p.get("pnl_pct") or 0) if pos_list else None
-    worst = min(pos_list, key=lambda p: p.get("pnl_pct") or 0) if pos_list else None
-    return format_portfolio_summary(
+    profit_count = sum(1 for p in pos_list if p.get("pnl", 0) > 0)
+    loss_count = sum(1 for p in pos_list if p.get("pnl", 0) < 0)
+    unavailable = sum(1 for p in pos_list if p.get("price_unavailable"))
+    valid = [p for p in pos_list if not p.get("price_unavailable")]
+    best = max(valid, key=lambda p: p.get("pnl_pct") or -999) if valid else None
+    worst = min(valid, key=lambda p: p.get("pnl_pct") or 999) if valid else None
+    msg = format_portfolio_summary(
         total_value=tv, total_invested=ti, total_pnl=tp, total_pnl_pct=tpp,
         tokens_in_profit=profit_count, tokens_in_loss=loss_count,
         best_performer=(best["symbol"], best["pnl_pct"]) if best else None,
         worst_performer=(worst["symbol"], worst["pnl_pct"]) if worst else None,
     )
+    if unavailable:
+        msg += f"\n\n\u26a0\ufe0f Price unavailable for {unavailable} token(s)"
+    return msg
 
 
 def handle_portfolio_summary(args: list) -> str:
@@ -86,6 +153,7 @@ def handle_portfolio_add(args: list) -> str:
         return "Quantity and price must be positive."
     user_id = db_models.register_user(TELEGRAM_ID)
     portfolio_id = db_models.get_or_create_portfolio(user_id)
+    coin_id = _resolve_coin_id(symbol)
     token_name = symbol
     try:
         tok = trading_ui.resolve_token(symbol)
@@ -95,13 +163,6 @@ def handle_portfolio_add(args: list) -> str:
                 network = tok.get("chain_id", "")
             if not contract:
                 contract = tok.get("contract_address", "")
-    except Exception:
-        pass
-    coin_id = symbol.lower()
-    try:
-        tok = trading_ui.resolve_token(symbol)
-        if tok:
-            coin_id = tok.get("slug", coin_id)
     except Exception:
         pass
     test_flag = 1 if config.TEST_MODE else 0
@@ -117,6 +178,7 @@ def handle_portfolio_add(args: list) -> str:
             notes=f"Added via /portfolio_add", is_test=test_flag
         )
     db_models.add_portfolio_token(portfolio_id, symbol, qty, price, token_name, contract, network)
+    logger.info(f"PORTFOLIO_ADD: symbol={symbol}, qty={qty}, price={price}, coin_id={coin_id}")
     return (
         f"\u2705 Added {symbol}\n"
         f"Quantity: {qty:.6f}\n"
@@ -133,23 +195,25 @@ def handle_portfolio_remove(args: list) -> str:
     pos = portfolio_db.get_position(symbol=symbol, is_test=test_flag)
     if not pos:
         return f"Token {symbol} not found in portfolio."
-    portfolio_db.archive_position(symbol, is_test=test_flag)
+    deleted = portfolio_db.hard_delete_position(symbol=symbol, is_test=test_flag)
     portfolio_db.add_transaction(
         pos["coin_id"], symbol, "remove",
         0, 0, 0, notes="Removed via /portfolio_remove", is_test=test_flag
     )
+    logger.info(f"PORTFOLIO_REMOVE: symbol={symbol}, deleted={deleted}")
     return f"\u2705 Removed {symbol} from portfolio."
 
 
 def handle_portfolio_clear(args: list) -> str:
     test_flag = 1 if config.TEST_MODE else 0
-    positions = portfolio_db.get_all_positions(is_test=test_flag)
+    positions = portfolio_db.get_active_positions(is_test=test_flag)
     if not positions:
         return "Portfolio is already empty."
     count = 0
     for pos in positions:
-        portfolio_db.archive_position(pos["symbol"], is_test=test_flag)
-        count += 1
+        deleted = portfolio_db.hard_delete_position(symbol=pos["symbol"], is_test=test_flag)
+        count += deleted
+    logger.info(f"PORTFOLIO_CLEAR: deleted {count} tokens")
     return f"\u2705 Cleared {count} token(s) from portfolio."
 
 

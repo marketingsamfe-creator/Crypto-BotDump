@@ -203,6 +203,29 @@ def _row_to_dict(row):
 
 # --- Positions ---
 
+def get_all_positions(is_test=0):
+    return get_active_positions(is_test)
+
+
+def hard_delete_position(symbol=None, token_key=None, is_test=0):
+    conn = _conn()
+    if token_key:
+        deleted = conn.execute(
+            "DELETE FROM portfolio_positions WHERE token_key = ? AND is_test = ?",
+            (token_key, is_test)
+        ).rowcount
+    elif symbol:
+        deleted = conn.execute(
+            "DELETE FROM portfolio_positions WHERE symbol = ? AND is_test = ?",
+            (symbol.upper(), is_test)
+        ).rowcount
+    else:
+        deleted = 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def get_active_positions(is_test=0):
     conn = _conn()
     rows = conn.execute(

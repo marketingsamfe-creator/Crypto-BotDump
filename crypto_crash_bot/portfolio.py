@@ -1,21 +1,44 @@
 from . import config, portfolio_db
 from .coingecko_client import fetch_market_coins_by_ids
+from .logger import logger
+from .cache import get_price_cache
+
+PRICE_CACHE_TTL = 60
+
+
+def _fetch_prices(slugs: list) -> dict:
+    if not slugs:
+        return {}
+    cache = get_price_cache()
+    result = {}
+    uncached = []
+    for slug in slugs:
+        cached = cache.get(f"price:{slug}")
+        if cached:
+            result[slug] = cached
+        else:
+            uncached.append(slug)
+    if uncached:
+        try:
+            market_data = fetch_market_coins_by_ids(uncached, changes="1h,24h,7d")
+            if market_data:
+                for c in market_data:
+                    cid = c["id"]
+                    result[cid] = c
+                    cache.set(f"price:{cid}", c, ttl=PRICE_CACHE_TTL)
+        except Exception as e:
+            logger.warning(f"PORTFOLIO_PRICE_FETCH_ERROR: {e}")
+    return result
 
 
 def calculate_portfolio():
     positions = portfolio_db.get_active_positions()
     cash_balance = portfolio_db.get_cash_balance()
+    logger.info(f"PORTFOLIO_CALC: positions={len(positions)}, cash={cash_balance}")
 
     slugs = [p["coin_id"] for p in positions]
-    prices = {}
-    if slugs:
-        try:
-            market_data = fetch_market_coins_by_ids(slugs, changes="1h,24h,7d")
-            if market_data:
-                for c in market_data:
-                    prices[c["id"]] = c
-        except Exception:
-            pass
+    logger.info(f"PORTFOLIO_CALC: slugs={slugs}")
+    prices = _fetch_prices(slugs)
 
     total_value = 0.0
     total_cost_basis = 0.0
@@ -27,6 +50,7 @@ def calculate_portfolio():
     best_token = None
     worst_token = None
     tokens = []
+    unavailable_count = 0
 
     total_alloc_sum = sum(p.get("cost_basis_usd", 0) or 0 for p in positions)
     if total_alloc_sum <= 0:
@@ -41,12 +65,36 @@ def calculate_portfolio():
         avg_entry = pos.get("avg_entry_price", 0) or 0
 
         data = prices.get(slug, {})
-        price = data.get("current_price", 0) or 0
+        price = data.get("current_price")
+
+        if price is None:
+            logger.warning(f"PORTFOLIO_PRICE_MISSING: symbol={sym}, slug={slug}")
+            tokens.append({
+                "slug": slug,
+                "symbol": sym,
+                "name": pos.get("name", ""),
+                "price": None,
+                "change_1h": None,
+                "change_24h": None,
+                "change_7d": None,
+                "quantity": qty,
+                "position_value": 0,
+                "entry_price": avg_entry,
+                "cost_basis": cost_basis,
+                "pnl_pct": None,
+                "pnl_usd": None,
+                "realized_pnl": realized_pnl,
+                "allocation": round((cost_basis / total_alloc_sum) * 100, 2) if total_alloc_sum > 0 else 0,
+                "price_unavailable": True,
+            })
+            unavailable_count += 1
+            continue
+
+        price = float(price)
+        position_value = qty * price if qty > 0 else 0
         change_1h = data.get("price_change_percentage_1h_in_currency")
         change_24h = data.get("price_change_percentage_24h")
         change_7d = data.get("price_change_percentage_7d_in_currency")
-
-        position_value = qty * price if qty > 0 else 0
 
         pnl_pct = None
         pnl_usd = None
@@ -55,6 +103,8 @@ def calculate_portfolio():
             pnl_usd = (price - avg_entry) * qty
 
         alloc_pct = (cost_basis / total_alloc_sum) * 100 if total_alloc_sum > 0 else 0
+
+        logger.info(f"PORTFOLIO_TOKEN: symbol={sym}, qty={qty}, price={price}, entry={avg_entry}, pnl_pct={pnl_pct}")
 
         tokens.append({
             "slug": slug,
@@ -97,6 +147,10 @@ def calculate_portfolio():
     else:
         total_pnl_pct = 0.0
 
+    logger.info(f"PORTFOLIO_CALC_RESULT: total_value={total_value}, total_cost_basis={total_cost_basis}, "
+                f"cash={cash_balance}, pnl={total_pnl}, pnl_pct={total_pnl_pct}, "
+                f"unavailable={unavailable_count}")
+
     result = {
         "total_invested": total_cost_basis,
         "total_value": total_value,
@@ -110,5 +164,6 @@ def calculate_portfolio():
         "best_token": best_token,
         "worst_token": worst_token,
         "tokens": tokens,
+        "unavailable_count": unavailable_count,
     }
     return result

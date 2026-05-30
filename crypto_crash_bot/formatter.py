@@ -178,6 +178,19 @@ def format_portfolio_report(result):
     lines.append(SEP)
 
     for token in result["tokens"]:
+        if token.get("price_unavailable"):
+            lines.append(
+                f"\u26a0\ufe0f <b>{token['symbol']} — {token['name']}</b>"
+            )
+            lines.append("   \u26a0\ufe0f Price unavailable")
+            if token["entry_price"] and token["entry_price"] > 0:
+                lines.append(f"   Entry: {format_usd(token['entry_price'])}")
+                lines.append(f"   Cost Basis: {format_usd(token.get('cost_basis', 0))}")
+            if token["quantity"] and token["quantity"] > 0:
+                lines.append(f"   Position: {token['quantity']:.4f} {token['symbol']}")
+            lines.append("")
+            continue
+
         e = _change_emoji(token["change_24h"])
         lines.append(
             f"{e} <b>{token['symbol']} — {token['name']}</b>"
@@ -223,6 +236,10 @@ def format_portfolio_report(result):
         lines.append(f"🟢 Best 24h: {result['best_token']}")
     if result["worst_token"]:
         lines.append(f"🔴 Worst 24h: {result['worst_token']}")
+
+    unavailable = result.get("unavailable_count", 0)
+    if unavailable:
+        lines.append(f"\u26a0\ufe0f {unavailable} token(s) with unavailable price")
 
     lines.append(f"\n🕐 {timestamp}")
 
