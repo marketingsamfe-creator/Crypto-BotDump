@@ -29,23 +29,40 @@ last_update_id = 0
 
 CMD_DEFS = {
     "/portafolio": {"args": [], "desc": "Resumen del portafolio"},
+    "/portfolio": {"args": [], "desc": "Portfolio summary (English)"},
+    "/portfolio_summary": {"args": [], "desc": "Detailed portfolio report"},
+    "/portfolio_add": {"args": [], "desc": "Add token to portfolio"},
+    "/portfolio_remove": {"args": [], "desc": "Remove token from portfolio"},
+    "/portfolio_clear": {"args": [], "desc": "Clear all portfolio tokens"},
+    "/portfolio_help": {"args": [], "desc": "Portfolio commands help"},
+    "/portfolio_import": {"args": [], "desc": "Import from URL or text"},
     "/precio": {"args": [("token", True)], "desc": "Precio de un token",
         "examples": ["/precio tao", "/precio bittensor"]},
     "/search": {"args": [("texto", True)], "desc": "Buscar criptomoneda",
         "examples": ["/search tao", "/search bitcoin"]},
+    "/token": {"args": [("query", True)], "desc": "Token search (English)"},
+    "/scan": {"args": [("contract", True)], "desc": "Scan token by contract address"},
+    "/contract": {"args": [("network", True), ("contract", True)], "desc": "Scan token by network + contract"},
     "/top": {"args": [], "desc": "Top 10 criptos"},
     "/gainers": {"args": [], "desc": "Top 10 ganadoras 24h"},
     "/losers": {"args": [], "desc": "Top 10 perdedoras 24h"},
+    "/top_gainers": {"args": [], "desc": "Top gainers (English)"},
+    "/top_losers": {"args": [], "desc": "Top losers (English)"},
+    "/top_trending": {"args": [], "desc": "Top trending tokens"},
     "/early": {"args": [], "desc": "Señales tempranas"},
     "/trends": {"args": [], "desc": "Tendencias sociales"},
     "/hype": {"args": [], "desc": "Ruido sin volumen"},
+    "/hype_analysis": {"args": [], "desc": "Hype + opportunity scoring"},
     "/alerts": {"args": [], "desc": "Alertas recientes"},
+    "/dump_alerts_on": {"args": [], "desc": "Enable dump alerts"},
+    "/dump_alerts_off": {"args": [], "desc": "Disable dump alerts"},
+    "/hourly_report_on": {"args": [], "desc": "Enable hourly reports"},
+    "/hourly_report_off": {"args": [], "desc": "Disable hourly reports"},
     "/watchlist": {"args": [], "desc": "Tokens vigilados"},
     "/addwatch": {"args": [("coin_id", True)], "desc": "Agregar a watchlist",
         "examples": ["/addwatch bittensor"]},
     "/removewatch": {"args": [("coin_id", True)], "desc": "Quitar de watchlist",
         "examples": ["/removewatch bittensor"]},
-
     "/setthreshold": {"args": [("coin_id", True), ("window", True), ("percent", True)],
         "desc": "Umbral de alerta",
         "examples": ["/setthreshold bittensor 15m -15"]},
@@ -68,9 +85,6 @@ CMD_DEFS = {
         "examples": ["/deposit 1000 capital inicial"]},
     "/withdraw": {"args": [("amount_usd", True), ("note", False)], "desc": "Retirar efectivo",
         "examples": ["/withdraw 300 retiro parcial"]},
-    "/setthreshold": {"args": [("coin_id", True), ("window", True), ("percent", True)],
-        "desc": "Umbral de alerta",
-        "examples": ["/setthreshold bittensor 15m -15"]},
     "/portfolioedit": {"args": [], "desc": "Menu de edicion del portafolio"},
     "/editposition": {"args": [("symbol", True), ("qty", True), ("price", True)],
         "desc": "Editar cantidad y precio de un token",
@@ -90,7 +104,25 @@ CMD_DEFS = {
 
 BOT_COMMANDS = [
     {"command": "portafolio", "description": "Resumen del portafolio"},
+    {"command": "portfolio", "description": "Portfolio summary (English)"},
+    {"command": "portfolio_add", "description": "Add token to portfolio"},
+    {"command": "portfolio_remove", "description": "Remove token from portfolio"},
+    {"command": "portfolio_summary", "description": "Detailed portfolio report"},
+    {"command": "portfolio_clear", "description": "Clear all tokens"},
+    {"command": "portfolio_help", "description": "Portfolio commands help"},
+    {"command": "portfolio_import", "description": "Import from URL or text"},
     {"command": "importportfolio", "description": "Importar portafolio desde link o texto"},
+    {"command": "token", "description": "Token search"},
+    {"command": "scan", "description": "Scan token by contract address"},
+    {"command": "contract", "description": "Scan by network + contract"},
+    {"command": "top_gainers", "description": "Top gainers"},
+    {"command": "top_losers", "description": "Top losers"},
+    {"command": "top_trending", "description": "Top trending tokens"},
+    {"command": "hype_analysis", "description": "Hype + opportunity scoring"},
+    {"command": "dump_alerts_on", "description": "Enable dump alerts"},
+    {"command": "dump_alerts_off", "description": "Disable dump alerts"},
+    {"command": "hourly_report_on", "description": "Enable hourly reports"},
+    {"command": "hourly_report_off", "description": "Disable hourly reports"},
     {"command": "position", "description": "Detalle de una posicion"},
     {"command": "transactions", "description": "Historial de operaciones"},
     {"command": "addtoken", "description": "Agregar token al portafolio"},
@@ -109,7 +141,7 @@ BOT_COMMANDS = [
     {"command": "trends", "description": "Tendencias sociales"},
     {"command": "early", "description": "Senales tempranas"},
     {"command": "hype", "description": "Ruido sin volumen"},
-    {"command": "alerts", "description": "Alertas recientes"},
+    {"command": "alerts", "description": "Alertas recientes / dump status"},
     {"command": "watchlist", "description": "Watchlist"},
     {"command": "addwatch", "description": "Agregar a watchlist"},
     {"command": "removewatch", "description": "Quitar de watchlist"},
@@ -1471,6 +1503,88 @@ def handle_command(text):
 
         elif cmd == "/help":
             msg = format_help()
+            send_message(msg)
+
+        # ── NEW ENGLISH COMMAND ALIASES ──
+        elif cmd == "/portfolio_summary":
+            from .handlers.portfolio_handler import handle_portfolio_summary
+            msg = handle_portfolio_summary(args)
+            send_message(msg)
+        elif cmd == "/portfolio_add":
+            from .handlers.portfolio_handler import handle_portfolio_add
+            msg = handle_portfolio_add(args)
+            send_message(msg)
+        elif cmd == "/portfolio_remove":
+            from .handlers.portfolio_handler import handle_portfolio_remove
+            msg = handle_portfolio_remove(args)
+            send_message(msg)
+        elif cmd == "/portfolio_clear":
+            from .handlers.portfolio_handler import handle_portfolio_clear
+            msg = handle_portfolio_clear(args)
+            send_message(msg)
+        elif cmd == "/portfolio_help":
+            from .handlers.portfolio_handler import handle_portfolio_help
+            msg = handle_portfolio_help(args)
+            send_message(msg)
+        elif cmd == "/portfolio_import":
+            from .handlers.portfolio_handler import handle_portfolio_import
+            msg = handle_portfolio_import(args)
+            send_message(msg)
+        elif cmd == "/token":
+            from .handlers.token_handler import handle_token
+            msg = handle_token(args)
+            send_message(msg)
+        elif cmd == "/scan":
+            from .handlers.token_handler import handle_scan
+            msg = handle_scan(args)
+            send_message(msg)
+        elif cmd == "/contract":
+            from .handlers.token_handler import handle_contract
+            msg = handle_contract(args)
+            send_message(msg)
+        elif cmd == "/top_gainers":
+            mid = send_loading("\U0001f7e2 <b>Loading top gainers...</b>")
+            coins = fetch_market_coins(page=1, per_page=250)
+            if coins:
+                valid = [c for c in coins if c.get("price_change_percentage_24h") is not None]
+                top = sorted(valid, key=lambda x: x["price_change_percentage_24h"], reverse=True)[:10]
+                parts = format_gainers_losers(top, [])
+                edit_message("\n".join(parts), message_id=mid)
+            else:
+                edit_message(format_api_error("CoinGecko"), message_id=mid)
+        elif cmd == "/top_losers":
+            mid = send_loading("\U0001f534 <b>Loading top losers...</b>")
+            coins = fetch_market_coins(page=1, per_page=250)
+            if coins:
+                valid = [c for c in coins if c.get("price_change_percentage_24h") is not None]
+                top = sorted(valid, key=lambda x: x["price_change_percentage_24h"])[:10]
+                parts = format_gainers_losers([], top)
+                edit_message("\n".join(parts), message_id=mid)
+            else:
+                edit_message(format_api_error("CoinGecko"), message_id=mid)
+        elif cmd == "/top_trending":
+            from .handlers.social_handler import handle_top_trending
+            msg = handle_top_trending(args)
+            send_message(msg)
+        elif cmd == "/hype_analysis":
+            from .handlers.social_handler import handle_hype_analysis
+            msg = handle_hype_analysis(args)
+            send_message(msg)
+        elif cmd == "/dump_alerts_on":
+            from .handlers.alert_handler import handle_dump_alerts_on
+            msg = handle_dump_alerts_on(args)
+            send_message(msg)
+        elif cmd == "/dump_alerts_off":
+            from .handlers.alert_handler import handle_dump_alerts_off
+            msg = handle_dump_alerts_off(args)
+            send_message(msg)
+        elif cmd == "/hourly_report_on":
+            from .handlers.alert_handler import handle_hourly_report_on
+            msg = handle_hourly_report_on(args)
+            send_message(msg)
+        elif cmd == "/hourly_report_off":
+            from .handlers.alert_handler import handle_hourly_report_off
+            msg = handle_hourly_report_off(args)
             send_message(msg)
 
         else:

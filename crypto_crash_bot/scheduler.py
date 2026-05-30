@@ -3,13 +3,16 @@ from datetime import datetime
 from . import config
 from .logger import logger
 from .coingecko_client import fetch_all_market_coins, get_api_stats
-from .alerts import check_alerts, save_price_snapshots
+from .alerts import check_alerts, save_price_snapshots as alerts_save_snapshots
 from . import portfolio_db
 from .telegram_bot import (
     poll_updates, send_alert, send_portfolio_report, send_startup_msg,
-    delete_webhook, set_bot_commands, send_batch_hype_alerts,
+    delete_webhook, set_bot_commands, send_batch_hype_alerts, send_message,
 )
 from .social import scanner as social_scanner
+from .database import models as db_models
+from .jobs.price_snapshots import save_price_snapshots as db_save_snapshots
+from .jobs.hourly_reports import get_hourly_report, should_send_report, reset_report_timer
 
 last_crash_time = 0
 last_portfolio_time = 0
@@ -82,6 +85,7 @@ def run_main_loop():
     logger.info("Bot started — v3 modular")
     portfolio_db.init_db()
     portfolio_db.migrate_from_json()
+    db_models.init_database()
     last_crash_time = time.time()
     last_portfolio_time = 0
     last_social_scan_time = 0
@@ -114,5 +118,18 @@ def run_main_loop():
             run_social_scan()
         except Exception as e:
             logger.error(f"Social scan error: {e}")
+
+        try:
+            db_save_snapshots()
+        except Exception as e:
+            logger.error(f"Price snapshot error: {e}")
+
+        try:
+            if should_send_report():
+                report = get_hourly_report()
+                if report:
+                    send_message(report)
+        except Exception as e:
+            logger.error(f"Hourly report error: {e}")
 
         time.sleep(config.POLL_INTERVAL)
