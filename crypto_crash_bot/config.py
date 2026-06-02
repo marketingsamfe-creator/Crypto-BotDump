@@ -1,8 +1,26 @@
 import os
 
+_env_loaded = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+if not _env_loaded:
+    _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.exists(_env_path):
+        with open(_env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip("\"'")
+                    if _k not in os.environ:
+                        os.environ[_k] = _v
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN environment variable is required")
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN is required. "
+        "Set it as an environment variable or create a .env file in the project root."
+    )
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1199212284")
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY", "")
