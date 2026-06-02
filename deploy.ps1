@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-git add -A
+git add -u
 git commit -m "$Message" 2>$null
 if ($?) {
     Write-Host "Committed: $Message"

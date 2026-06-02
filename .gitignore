@@ -8,3 +8,6 @@ test_*.py
 *.jpg
 *.jpeg
 *.gif
+portfolio_data.json
+alerted_coins.json
+data/
