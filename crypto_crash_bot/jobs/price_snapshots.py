@@ -39,7 +39,7 @@ def save_price_snapshots():
             if not ids:
                 continue
             try:
-                prices = coingecko_client.get_prices(ids)
+                prices = coingecko_client.fetch_simple_price(ids)
                 if prices:
                     for token_id, sym in batch:
                         if token_id in prices:

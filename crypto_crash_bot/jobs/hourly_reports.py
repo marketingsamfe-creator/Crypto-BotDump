@@ -21,21 +21,23 @@ REPORT_INTERVAL = 3600
 
 
 def get_hourly_report() -> Optional[str]:
+    gainers = []
+    losers = []
     try:
-        losers = coingecko_client.get_losers(limit=10)
-        gainers = coingecko_client.get_gainers(limit=10)
+        all_coins = coingecko_client.fetch_all_market_coins()
+        if all_coins:
+            valid = [c for c in all_coins if c.get("price_change_percentage_24h") is not None]
+            gainers = sorted(valid, key=lambda x: x["price_change_percentage_24h"], reverse=True)[:10]
+            losers = sorted(valid, key=lambda x: x["price_change_percentage_24h"])[:10]
     except Exception as e:
         logger.warning(f"Hourly report data error: {e}")
-        losers = []
-        gainers = []
     trending = []
     try:
-        from ..social.trending import get_trending
-        trending_data = get_trending()
+        from ..social.trending import fetch_trending
+        trending_data = fetch_trending()
         if trending_data:
             for t in trending_data[:5]:
-                item = t.get("item", t)
-                trending.append({"name": item.get("name", "?"), "symbol": item.get("symbol", "?")})
+                trending.append({"name": t.get("name", "?"), "symbol": t.get("symbol", "?")})
     except Exception as e:
         logger.warning(f"Trending error: {e}")
     hype_tokens = []

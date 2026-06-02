@@ -43,7 +43,8 @@ def handle_hype(args: list) -> str:
 
 def handle_top_trending(args: list) -> str:
     try:
-        trending = coingecko_client.get_trending()
+        from ..social.trending import fetch_trending
+        trending = fetch_trending()
         if not trending:
             return "No trending data available."
         lines = ["\U0001f525 Top Trending Tokens", ""]

@@ -37,7 +37,7 @@ def run_crash_detection():
 
         logger.info(f"Fetched {len(coins)} coins")
 
-        snapshots = save_price_snapshots(coins)
+        snapshots = alerts_save_snapshots(coins)
         alerts = check_alerts(coins, snapshots)
 
         for alert in alerts:

@@ -57,14 +57,13 @@ def run_scan():
         vol_real = entry.get("volume_24h")
         liq_real = entry.get("liquidity")
         volume_score = scoring.calculate_volume_score(vol_real, liq_real)
+        score = scoring.calculate_score(entry)
 
         logger.info(
             f"HYPE_DEBUG token={slug} source={'dexscreener' if entry.get('dex_data') else 'coingecko'} "
             f"volume_h24={vol_real} liquidity={liq_real} "
             f"volume_score={volume_score} social_score={score}"
         )
-
-        score = scoring.calculate_score(entry)
         category = scoring.classify(
             score, entry.get("price_change_1h"),
             entry.get("price_change_24h"), entry.get("risk_flags", [])
