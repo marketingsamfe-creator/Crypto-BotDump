@@ -40,7 +40,7 @@ def run_scan():
         pair = dex_client.search_pairs(symbol)
         best = dex_client.get_best_pair(pair, symbol)
         if best:
-            dex_info = dex_client.extract_market_data(best)
+            dex_info = dex_client.extract_pair_data(best)
             entry["dex_data"] = dex_info
             entry["price"] = entry["price"] or dex_info.get("price")
             entry["price_change_1h"] = dex_info.get("price_change_1h")

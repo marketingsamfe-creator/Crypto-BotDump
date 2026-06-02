@@ -21,7 +21,7 @@ if not TELEGRAM_BOT_TOKEN:
         "TELEGRAM_BOT_TOKEN is required. "
         "Set it as an environment variable or create a .env file in the project root."
     )
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1199212284")
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY", "")
 
