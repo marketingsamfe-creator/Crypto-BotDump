@@ -1,6 +1,8 @@
 import os
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8862906082:AAEIXM2RrXwVe_F8kBkFQB9SQIdONjoTmEE")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN environment variable is required")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1199212284")
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
 COINMARKETCAP_API_KEY = os.environ.get("COINMARKETCAP_API_KEY", "")
